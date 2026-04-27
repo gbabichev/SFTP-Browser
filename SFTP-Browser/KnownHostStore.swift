@@ -11,13 +11,17 @@ import Foundation
 import NIO
 import NIOSSH
 
-struct HostKeyDetails: Codable, Equatable, Sendable {
+struct HostKeyDetails: Identifiable, Codable, Equatable, Sendable {
     let host: String
     let port: Int
     let algorithm: String
     let fingerprint: String
     let openSSHPublicKey: String
     let trustedAt: Date
+
+    var id: String {
+        "\(host)|\(port)"
+    }
 }
 
 enum HostKeyValidationError: LocalizedError, Sendable {
@@ -60,6 +64,15 @@ struct KnownHostStore: Sendable {
         records()[Self.key(host: host, port: port)]
     }
 
+    func trustedHosts() -> [HostKeyDetails] {
+        records().values.sorted { lhs, rhs in
+            if lhs.host != rhs.host {
+                return lhs.host.localizedCaseInsensitiveCompare(rhs.host) == .orderedAscending
+            }
+            return lhs.port < rhs.port
+        }
+    }
+
     func trust(_ details: HostKeyDetails) {
         var records = records()
         records[Self.key(host: details.host, port: details.port)] = HostKeyDetails(
@@ -70,6 +83,12 @@ struct KnownHostStore: Sendable {
             openSSHPublicKey: details.openSSHPublicKey,
             trustedAt: Date()
         )
+        save(records)
+    }
+
+    func remove(_ details: HostKeyDetails) {
+        var records = records()
+        records.removeValue(forKey: Self.key(host: details.host, port: details.port))
         save(records)
     }
 

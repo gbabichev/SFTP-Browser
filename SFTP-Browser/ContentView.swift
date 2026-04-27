@@ -14,7 +14,13 @@ struct ContentView: View {
     @AppStorage("connection.username") private var storedUsername = ""
     @AppStorage("connection.remotePath") private var storedRemotePath = "/"
 
-    private let passwordStore = KeychainPasswordStore()
+    @State private var profiles: [ConnectionProfile] = []
+    @State private var selectedProfileID: ConnectionProfile.ID?
+    @State private var isProfilesPresented = false
+    @State private var isTrustedHostsPresented = false
+
+    private let profileStore = ConnectionProfileStore()
+    private let knownHostStore = KnownHostStore()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,27 +40,19 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    viewModel.toggleConnection()
-                } label: {
-                    Label(
-                        viewModel.isConnected ? "Disconnect" : "Connect",
-                        systemImage: viewModel.isConnected ? "bolt.slash" : "bolt"
-                    )
-                }
-                .disabled(!viewModel.canConnect)
+                connectionMenu
+            }
 
+//            ToolbarSpacer(.fixed, placement: .automatic)
+            
+            ToolbarItemGroup {
                 Button {
                     viewModel.refresh()
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(!viewModel.isConnected || viewModel.isBusy)
-            }
-
-            ToolbarSpacer(.fixed, placement: .automatic)
-            
-            ToolbarItemGroup {
+                
                 Button {
                     viewModel.createFolder()
                 } label: {
@@ -77,6 +75,34 @@ struct ContentView: View {
                 .disabled(!viewModel.isConnected || viewModel.isBusy || !viewModel.canDownloadSelection)
             }
         }
+        .sheet(isPresented: $isProfilesPresented) {
+            ConnectionProfilesView(
+                profiles: profiles,
+                canSaveProfile: viewModel.canConnect,
+                canUseProfile: !viewModel.isConnected && !viewModel.isBusy,
+                onSave: {
+                    saveCurrentProfile()
+                },
+                onUse: { profile in
+                    apply(profile)
+                    isProfilesPresented = false
+                },
+                onDelete: { profile in
+                    delete(profile)
+                },
+                onClose: {
+                    isProfilesPresented = false
+                }
+            )
+        }
+        .sheet(isPresented: $isTrustedHostsPresented) {
+            TrustedHostsView(
+                store: knownHostStore,
+                onClose: {
+                    isTrustedHostsPresented = false
+                }
+            )
+        }
         .onAppear(perform: restoreStoredConnection)
         .onChange(of: viewModel.host) { _, host in
             storedHost = host
@@ -91,7 +117,7 @@ struct ContentView: View {
             storedRemotePath = remotePath
         }
         .onChange(of: viewModel.password) { _, password in
-            passwordStore.savePassword(password)
+            passwordStore().savePassword(password)
         }
     }
 
@@ -132,6 +158,46 @@ struct ContentView: View {
             .shadow(radius: 12, y: 4)
         }
         .ignoresSafeArea()
+    }
+
+    private var connectionMenu: some View {
+        Menu {
+            if profiles.isEmpty {
+                Text("No Profiles")
+            } else {
+                ForEach(profiles) { profile in
+                    Button {
+                        connect(using: profile)
+                    } label: {
+                        Label(profile.displayName, systemImage: "person.crop.rectangle")
+                    }
+                    .disabled(viewModel.isConnected || viewModel.isBusy)
+                }
+            }
+
+            Divider()
+
+            Button {
+                isProfilesPresented = true
+            } label: {
+                Label("Manage Profiles", systemImage: "person.crop.rectangle.stack")
+            }
+
+            Button {
+                isTrustedHostsPresented = true
+            } label: {
+                Label("Trusted Hosts", systemImage: "shield")
+            }
+        } label: {
+            Label(
+                viewModel.isConnected ? "Disconnect" : "Connect",
+                systemImage: viewModel.isConnected ? "bolt.slash" : "bolt"
+            )
+        } primaryAction: {
+            if viewModel.canConnect {
+                viewModel.toggleConnection()
+            }
+        }
     }
 
     private var connectionPanel: some View {
@@ -224,11 +290,141 @@ struct ContentView: View {
     }
 
     private func restoreStoredConnection() {
+        reloadProfiles()
         viewModel.host = storedHost
         viewModel.port = storedPort
         viewModel.username = storedUsername
         viewModel.remotePath = storedRemotePath == "." ? "/" : storedRemotePath
-        viewModel.password = passwordStore.loadPassword()
+        selectedProfileID = matchingProfileID()
+        viewModel.password = loadCurrentPassword()
+    }
+
+    private func apply(_ profile: ConnectionProfile) {
+        viewModel.host = profile.host
+        viewModel.port = profile.port
+        viewModel.username = profile.username
+        viewModel.remotePath = profile.remotePath == "." ? "/" : profile.remotePath
+        selectedProfileID = profile.id
+        viewModel.password = loadPassword(for: profile)
+    }
+
+    private func connect(using profile: ConnectionProfile) {
+        apply(profile)
+        if viewModel.canConnect {
+            viewModel.connect()
+        }
+    }
+
+    private func saveCurrentProfile() {
+        guard let name = promptForProfileName() else {
+            return
+        }
+
+        let now = Date()
+        let profile = ConnectionProfile(
+            id: selectedProfileID ?? UUID(),
+            name: name,
+            host: viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines),
+            port: viewModel.port,
+            username: viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines),
+            remotePath: normalizedRemotePath(viewModel.remotePath),
+            updatedAt: now
+        )
+
+        profileStore.save(profile)
+        selectedProfileID = profile.id
+        passwordStore(for: profile).savePassword(viewModel.password)
+        reloadProfiles()
+    }
+
+    private func delete(_ profile: ConnectionProfile) {
+        profileStore.delete(profile)
+        passwordStore(for: profile).deletePassword()
+        if selectedProfileID == profile.id {
+            selectedProfileID = nil
+        }
+        reloadProfiles()
+    }
+
+    private func reloadProfiles() {
+        profiles = profileStore.profiles()
+        if selectedProfileID != nil, profiles.first(where: { $0.id == selectedProfileID }) == nil {
+            selectedProfileID = nil
+        }
+    }
+
+    private func matchingProfileID() -> ConnectionProfile.ID? {
+        profiles.first { profile in
+            profile.host.caseInsensitiveCompare(viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+            && profile.port == viewModel.port
+            && profile.username == viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines)
+            && normalizedRemotePath(profile.remotePath) == normalizedRemotePath(viewModel.remotePath)
+        }?.id
+    }
+
+    private func promptForProfileName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Save Connection Profile"
+        alert.informativeText = "Enter a name for this connection profile."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let defaultName = profiles.first(where: { $0.id == selectedProfileID })?.name
+            ?? "\(viewModel.username)@\(viewModel.host)"
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        textField.stringValue = defaultName
+        textField.selectText(nil)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        let name = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? defaultName : name
+    }
+
+    private func passwordStore() -> KeychainPasswordStore {
+        KeychainPasswordStore(account: passwordAccount(
+            host: viewModel.host,
+            port: viewModel.port,
+            username: viewModel.username
+        ))
+    }
+
+    private func passwordStore(for profile: ConnectionProfile) -> KeychainPasswordStore {
+        KeychainPasswordStore(account: passwordAccount(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username
+        ))
+    }
+
+    private func loadCurrentPassword() -> String {
+        let scopedPassword = passwordStore().loadPassword()
+        return scopedPassword.isEmpty ? KeychainPasswordStore().loadPassword() : scopedPassword
+    }
+
+    private func loadPassword(for profile: ConnectionProfile) -> String {
+        let scopedPassword = passwordStore(for: profile).loadPassword()
+        return scopedPassword.isEmpty ? KeychainPasswordStore().loadPassword() : scopedPassword
+    }
+
+    private func passwordAccount(host: String, port: Int, username: String) -> String {
+        let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "sftp-password:\(normalizedUsername)@\(normalizedHost):\(port)"
+    }
+
+    private func normalizedRemotePath(_ path: String) -> String {
+        var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "." {
+            return "/"
+        }
+        while trimmed.count > 1, trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        return trimmed
     }
 }
 
