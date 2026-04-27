@@ -40,29 +40,42 @@ struct CitadelSFTPService: SFTPService {
         let totalBytes = localFileSize(at: localURL)
 
         try await withSFTP(config: config) { sftp in
-            try await sftp.withFile(
-                filePath: destinationPath,
-                flags: [.write, .create, .truncate]
-            ) { remoteFile in
-                let localFile = try FileHandle(forReadingFrom: localURL)
-                defer {
-                    try? localFile.close()
-                }
+            await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
+            _ = try await uploadLocalFile(
+                sftp: sftp,
+                localURL: localURL,
+                remoteFilePath: destinationPath,
+                completedBytes: 0,
+                totalBytes: totalBytes,
+                progress: progress
+            )
+        }
+    }
 
-                var offset: UInt64 = 0
-                await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
-                while true {
-                    try Task.checkCancellation()
-                    let data = localFile.readData(ofLength: Int(chunkSize))
-                    guard !data.isEmpty else {
-                        break
-                    }
+    func uploadItems(
+        config: SFTPConnectionConfig,
+        localURLs: [URL],
+        remoteDirectoryPath: String,
+        progress: TransferProgressHandler?
+    ) async throws {
+        let totalBytes = localURLs.map(Self.localItemSize).reduce(0, +)
+        let progressTotal = totalBytes > 0 ? totalBytes : nil
 
-                    try Task.checkCancellation()
-                    try await remoteFile.write(ByteBuffer(bytes: data), at: offset)
-                    offset += UInt64(data.count)
-                    await progress?(TransferProgress(completedBytes: Int64(offset), totalBytes: totalBytes))
-                }
+        try await withSFTP(config: config) { sftp in
+            var completedBytes: Int64 = 0
+            await progress?(TransferProgress(completedBytes: 0, totalBytes: progressTotal))
+
+            for localURL in localURLs {
+                try Task.checkCancellation()
+                let remotePath = appendingRemotePathComponent(remoteDirectoryPath, localURL.lastPathComponent)
+                completedBytes = try await uploadLocalItem(
+                    sftp: sftp,
+                    localURL: localURL,
+                    remotePath: remotePath,
+                    completedBytes: completedBytes,
+                    totalBytes: progressTotal,
+                    progress: progress
+                )
             }
         }
     }
@@ -73,31 +86,51 @@ struct CitadelSFTPService: SFTPService {
         localURL: URL,
         progress: TransferProgressHandler?
     ) async throws {
-        FileManager.default.createFile(atPath: localURL.path, contents: nil)
-
         try await withSFTP(config: config) { sftp in
-            try await sftp.withFile(filePath: remoteFilePath, flags: .read) { remoteFile in
-                let localFile = try FileHandle(forWritingTo: localURL)
-                defer {
-                    try? localFile.close()
-                }
+            let totalBytes = try? await remoteFileSize(sftp: sftp, remoteFilePath: remoteFilePath)
+            await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
+            _ = try await downloadRemoteFile(
+                sftp: sftp,
+                remoteFilePath: remoteFilePath,
+                localURL: localURL,
+                completedBytes: 0,
+                totalBytes: totalBytes,
+                progress: progress
+            )
+        }
+    }
 
-                var offset: UInt64 = 0
-                let totalBytes = try? await remoteFile.readAttributes().size.flatMap(Int64.init(exactly:))
-                await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
-                while true {
-                    try Task.checkCancellation()
-                    var buffer = try await remoteFile.read(from: offset, length: chunkSize)
-                    let readableBytes = buffer.readableBytes
-                    guard readableBytes > 0, let bytes = buffer.readBytes(length: readableBytes) else {
-                        break
-                    }
+    func downloadItems(
+        config: SFTPConnectionConfig,
+        remoteItems: [RemoteItem],
+        remoteDirectoryPath: String,
+        localDirectoryURL: URL,
+        progress: TransferProgressHandler?
+    ) async throws {
+        try await withSFTP(config: config) { sftp in
+            var totalBytes: Int64 = 0
+            for item in remoteItems {
+                let remotePath = appendingRemotePathComponent(remoteDirectoryPath, item.name)
+                totalBytes += try await remoteItemSize(sftp: sftp, remotePath: remotePath, isDirectory: item.isDirectory)
+            }
+            let progressTotal = totalBytes > 0 ? totalBytes : nil
 
-                    try Task.checkCancellation()
-                    localFile.write(Data(bytes))
-                    offset += UInt64(bytes.count)
-                    await progress?(TransferProgress(completedBytes: Int64(offset), totalBytes: totalBytes))
-                }
+            var completedBytes: Int64 = 0
+            await progress?(TransferProgress(completedBytes: 0, totalBytes: progressTotal))
+
+            for item in remoteItems {
+                try Task.checkCancellation()
+                let remotePath = appendingRemotePathComponent(remoteDirectoryPath, item.name)
+                let localURL = localDirectoryURL.appendingPathComponent(item.name)
+                completedBytes = try await downloadRemoteItem(
+                    sftp: sftp,
+                    remotePath: remotePath,
+                    isDirectory: item.isDirectory,
+                    localURL: localURL,
+                    completedBytes: completedBytes,
+                    totalBytes: progressTotal,
+                    progress: progress
+                )
             }
         }
     }
@@ -116,11 +149,228 @@ struct CitadelSFTPService: SFTPService {
 
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws {
         try await withSFTP(config: config) { sftp in
-            if isDirectory {
-                try await sftp.rmdir(at: remotePath)
-            } else {
-                try await sftp.remove(at: remotePath)
+            try await deleteRemoteItem(sftp: sftp, remotePath: remotePath, isDirectory: isDirectory)
+        }
+    }
+
+    private func uploadLocalItem(
+        sftp: SFTPClient,
+        localURL: URL,
+        remotePath: String,
+        completedBytes: Int64,
+        totalBytes: Int64?,
+        progress: TransferProgressHandler?
+    ) async throws -> Int64 {
+        if Self.isDirectory(localURL) {
+            try await ensureRemoteDirectory(sftp: sftp, remotePath: remotePath)
+            let childURLs = try FileManager.default.contentsOfDirectory(
+                at: localURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            var latestCompletedBytes = completedBytes
+            for childURL in childURLs {
+                try Task.checkCancellation()
+                latestCompletedBytes = try await uploadLocalItem(
+                    sftp: sftp,
+                    localURL: childURL,
+                    remotePath: appendingRemotePathComponent(remotePath, childURL.lastPathComponent),
+                    completedBytes: latestCompletedBytes,
+                    totalBytes: totalBytes,
+                    progress: progress
+                )
             }
+            return latestCompletedBytes
+        }
+
+        guard Self.isRegularFile(localURL) else {
+            return completedBytes
+        }
+
+        return try await uploadLocalFile(
+            sftp: sftp,
+            localURL: localURL,
+            remoteFilePath: remotePath,
+            completedBytes: completedBytes,
+            totalBytes: totalBytes,
+            progress: progress
+        )
+    }
+
+    private func uploadLocalFile(
+        sftp: SFTPClient,
+        localURL: URL,
+        remoteFilePath: String,
+        completedBytes: Int64,
+        totalBytes: Int64?,
+        progress: TransferProgressHandler?
+    ) async throws -> Int64 {
+        try await sftp.withFile(
+            filePath: remoteFilePath,
+            flags: [.write, .create, .truncate]
+        ) { remoteFile in
+            let localFile = try FileHandle(forReadingFrom: localURL)
+            defer {
+                try? localFile.close()
+            }
+
+            var offset: UInt64 = 0
+            var latestCompletedBytes = completedBytes
+            while true {
+                try Task.checkCancellation()
+                let data = localFile.readData(ofLength: Int(chunkSize))
+                guard !data.isEmpty else {
+                    break
+                }
+
+                try Task.checkCancellation()
+                try await remoteFile.write(ByteBuffer(bytes: data), at: offset)
+                offset += UInt64(data.count)
+                latestCompletedBytes += Int64(data.count)
+                await progress?(TransferProgress(completedBytes: latestCompletedBytes, totalBytes: totalBytes))
+            }
+            return latestCompletedBytes
+        }
+    }
+
+    private func downloadRemoteItem(
+        sftp: SFTPClient,
+        remotePath: String,
+        isDirectory: Bool,
+        localURL: URL,
+        completedBytes: Int64,
+        totalBytes: Int64?,
+        progress: TransferProgressHandler?
+    ) async throws -> Int64 {
+        if isDirectory {
+            try FileManager.default.createDirectory(at: localURL, withIntermediateDirectories: true)
+            let children = try await listRemoteItems(sftp: sftp, path: remotePath)
+            var latestCompletedBytes = completedBytes
+            for child in children {
+                try Task.checkCancellation()
+                latestCompletedBytes = try await downloadRemoteItem(
+                    sftp: sftp,
+                    remotePath: appendingRemotePathComponent(remotePath, child.name),
+                    isDirectory: child.isDirectory,
+                    localURL: localURL.appendingPathComponent(child.name),
+                    completedBytes: latestCompletedBytes,
+                    totalBytes: totalBytes,
+                    progress: progress
+                )
+            }
+            return latestCompletedBytes
+        }
+
+        return try await downloadRemoteFile(
+            sftp: sftp,
+            remoteFilePath: remotePath,
+            localURL: localURL,
+            completedBytes: completedBytes,
+            totalBytes: totalBytes,
+            progress: progress
+        )
+    }
+
+    private func downloadRemoteFile(
+        sftp: SFTPClient,
+        remoteFilePath: String,
+        localURL: URL,
+        completedBytes: Int64,
+        totalBytes: Int64?,
+        progress: TransferProgressHandler?
+    ) async throws -> Int64 {
+        try FileManager.default.createDirectory(
+            at: localURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if !FileManager.default.fileExists(atPath: localURL.path) {
+            FileManager.default.createFile(atPath: localURL.path, contents: nil)
+        }
+
+        return try await sftp.withFile(filePath: remoteFilePath, flags: .read) { remoteFile in
+            let localFile = try FileHandle(forWritingTo: localURL)
+            defer {
+                try? localFile.close()
+            }
+            try localFile.truncate(atOffset: 0)
+
+            var offset: UInt64 = 0
+            var latestCompletedBytes = completedBytes
+            while true {
+                try Task.checkCancellation()
+                var buffer = try await remoteFile.read(from: offset, length: chunkSize)
+                let readableBytes = buffer.readableBytes
+                guard readableBytes > 0, let bytes = buffer.readBytes(length: readableBytes) else {
+                    break
+                }
+
+                try Task.checkCancellation()
+                localFile.write(Data(bytes))
+                offset += UInt64(bytes.count)
+                latestCompletedBytes += Int64(bytes.count)
+                await progress?(TransferProgress(completedBytes: latestCompletedBytes, totalBytes: totalBytes))
+            }
+            return latestCompletedBytes
+        }
+    }
+
+    private func deleteRemoteItem(sftp: SFTPClient, remotePath: String, isDirectory: Bool) async throws {
+        if isDirectory {
+            let children = try await listRemoteItems(sftp: sftp, path: remotePath)
+            for child in children {
+                try Task.checkCancellation()
+                try await deleteRemoteItem(
+                    sftp: sftp,
+                    remotePath: appendingRemotePathComponent(remotePath, child.name),
+                    isDirectory: child.isDirectory
+                )
+            }
+            try await sftp.rmdir(at: remotePath)
+        } else {
+            try await sftp.remove(at: remotePath)
+        }
+    }
+
+    private func remoteItemSize(sftp: SFTPClient, remotePath: String, isDirectory: Bool) async throws -> Int64 {
+        if !isDirectory {
+            return try await remoteFileSize(sftp: sftp, remoteFilePath: remotePath)
+        }
+
+        let children = try await listRemoteItems(sftp: sftp, path: remotePath)
+        var totalBytes: Int64 = 0
+        for child in children {
+            try Task.checkCancellation()
+            totalBytes += try await remoteItemSize(
+                sftp: sftp,
+                remotePath: appendingRemotePathComponent(remotePath, child.name),
+                isDirectory: child.isDirectory
+            )
+        }
+        return totalBytes
+    }
+
+    private func remoteFileSize(sftp: SFTPClient, remoteFilePath: String) async throws -> Int64 {
+        try await sftp.withFile(filePath: remoteFilePath, flags: .read) { remoteFile in
+            let attributes = try await remoteFile.readAttributes()
+            return attributes.size.flatMap(Int64.init(exactly:)) ?? 0
+        }
+    }
+
+    private func listRemoteItems(sftp: SFTPClient, path: String) async throws -> [RemoteItem] {
+        let listings = try await sftp.listDirectory(atPath: path)
+        return listings
+            .flatMap(\.components)
+            .filter { component in
+                component.filename != "." && component.filename != ".."
+            }
+            .map(Self.remoteItem)
+    }
+
+    private func ensureRemoteDirectory(sftp: SFTPClient, remotePath: String) async throws {
+        do {
+            try await sftp.createDirectory(atPath: remotePath)
+        } catch {
+            // Existing directories are expected when replacing or merging uploads.
         }
     }
 
@@ -156,7 +406,9 @@ struct CitadelSFTPService: SFTPService {
         return RemoteItem(
             name: component.filename,
             isDirectory: isDirectory,
-            sizeBytes: size
+            sizeBytes: size,
+            modifiedAt: component.attributes.accessModificationTime?.modificationTime,
+            permissions: permissions
         )
     }
 
@@ -188,6 +440,45 @@ struct CitadelSFTPService: SFTPService {
             return nil
         }
         return Int64(size)
+    }
+
+    private static func localItemSize(at url: URL) -> Int64 {
+        if isDirectory(url) {
+            let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+            guard let enumerator = FileManager.default.enumerator(
+                at: url,
+                includingPropertiesForKeys: Array(resourceKeys),
+                options: [.skipsHiddenFiles]
+            ) else {
+                return 0
+            }
+
+            var totalBytes: Int64 = 0
+            for case let childURL as URL in enumerator {
+                guard isRegularFile(childURL) else {
+                    continue
+                }
+                totalBytes += localFileSizeValue(at: childURL)
+            }
+            return totalBytes
+        }
+
+        return localFileSizeValue(at: url)
+    }
+
+    private static func localFileSizeValue(at url: URL) -> Int64 {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            return 0
+        }
+        return Int64(size)
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
     }
 }
 

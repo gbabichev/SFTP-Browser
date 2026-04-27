@@ -66,12 +66,12 @@ final class AppViewModel: ObservableObject {
         && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var selectedFiles: [RemoteItem] {
-        items.filter { selectedItemIDs.contains($0.id) && !$0.isDirectory }
+    var selectedItems: [RemoteItem] {
+        items.filter { selectedItemIDs.contains($0.id) }
     }
 
     var canDownloadSelection: Bool {
-        !selectedFiles.isEmpty
+        !selectedItems.isEmpty
     }
 
     func toggleConnection() {
@@ -128,7 +128,7 @@ final class AppViewModel: ObservableObject {
     func upload() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.canChooseFiles = true
         if panel.runModal() == .OK {
             upload(panel.urls)
@@ -136,55 +136,44 @@ final class AppViewModel: ObservableObject {
     }
 
     func upload(_ urls: [URL]) {
-        let fileURLs = urls.filter(Self.isRegularFile)
-        guard !fileURLs.isEmpty else {
-            errorMessage = "Drop one or more files to upload."
+        let uploadURLs = urls.filter(Self.isUploadableItem)
+        guard !uploadURLs.isEmpty else {
+            errorMessage = "Drop one or more files or folders to upload."
+            return
+        }
+
+        let existingRemoteNames = Set(items.map(\.name))
+        let conflictingNames = uploadURLs
+            .map(\.lastPathComponent)
+            .filter { existingRemoteNames.contains($0) }
+        guard confirmReplaceIfNeeded(conflictingNames, locationDescription: "on the remote server") else {
             return
         }
 
         startBusyOperation(
-            message: fileURLs.count == 1 ? "Uploading \(fileURLs[0].lastPathComponent)..." : "Uploading \(fileURLs.count) files...",
+            message: uploadURLs.count == 1 ? "Uploading \(uploadURLs[0].lastPathComponent)..." : "Uploading \(uploadURLs.count) items...",
             canCancel: true
         ) {
-            let totalBytes = fileURLs.map(Self.localFileSize).reduce(0, +)
-            var completedBeforeCurrentFile: Int64 = 0
-            self.updateTransferProgress(
-                TransferProgress(completedBytes: 0, totalBytes: totalBytes > 0 ? totalBytes : nil)
+            try await self.service.uploadItems(
+                config: self.connectionConfig(),
+                localURLs: uploadURLs,
+                remoteDirectoryPath: self.remotePath,
+                progress: self.transferProgressHandler()
             )
-
-            for url in fileURLs {
-                try Task.checkCancellation()
-                let completedBeforeFile = completedBeforeCurrentFile
-                try await self.service.uploadFile(
-                    config: self.connectionConfig(),
-                    localURL: url,
-                    remotePath: self.remotePath,
-                    progress: { [weak self] progress in
-                        let aggregateProgress = TransferProgress(
-                            completedBytes: completedBeforeFile + progress.completedBytes,
-                            totalBytes: totalBytes > 0 ? totalBytes : progress.totalBytes
-                        )
-                        await self?.updateTransferProgress(aggregateProgress)
-                    }
-                )
-                completedBeforeCurrentFile += Self.localFileSize(url)
-            }
-
-            try Task.checkCancellation()
             try await self.loadCurrentDirectory()
         }
     }
 
     func download() {
-        let files = selectedFiles
-        guard !files.isEmpty else { return }
+        let selection = selectedItems
+        guard !selection.isEmpty else { return }
 
-        if files.count > 1 {
-            download(files)
+        if selection.count > 1 || selection[0].isDirectory {
+            download(selection)
             return
         }
 
-        let selectedItem = files[0]
+        let selectedItem = selection[0]
         let panel = NSSavePanel()
         panel.nameFieldStringValue = selectedItem.name
         if panel.runModal() == .OK, let url = panel.url {
@@ -250,7 +239,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func filePromiseWriter(for item: RemoteItem) -> RemoteFilePromiseWriter? {
-        guard isConnected, !isBusy, !item.isDirectory else {
+        guard isConnected, !isBusy else {
             return nil
         }
 
@@ -262,7 +251,7 @@ final class AppViewModel: ObservableObject {
                 throw CancellationError()
             }
 
-            try await self.downloadPromisedFile(
+            try await self.downloadPromisedItem(
                 item: item,
                 remoteFilePath: promisedRemoteFilePath,
                 localURL: destinationURL
@@ -286,7 +275,7 @@ final class AppViewModel: ObservableObject {
         selectedItemIDs.removeAll()
     }
 
-    private func download(_ files: [RemoteItem]) {
+    private func download(_ items: [RemoteItem]) {
         let panel = NSOpenPanel()
         panel.message = "Choose a folder for the selected downloads."
         panel.prompt = "Download"
@@ -299,39 +288,28 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        let conflictingNames = items
+            .map(\.name)
+            .filter { FileManager.default.fileExists(atPath: folderURL.appendingPathComponent($0).path) }
+        guard confirmReplaceIfNeeded(conflictingNames, locationDescription: "in the selected local folder") else {
+            return
+        }
+
         startBusyOperation(
-            message: files.count == 1 ? "Downloading \(files[0].name)..." : "Downloading \(files.count) files...",
+            message: items.count == 1 ? "Downloading \(items[0].name)..." : "Downloading \(items.count) items...",
             canCancel: true
         ) {
-            let totalBytes = files.map(\.sizeBytes).reduce(0, +)
-            var completedBeforeCurrentFile: Int64 = 0
-            self.updateTransferProgress(
-                TransferProgress(completedBytes: 0, totalBytes: totalBytes > 0 ? totalBytes : nil)
+            try await self.service.downloadItems(
+                config: self.connectionConfig(),
+                remoteItems: items,
+                remoteDirectoryPath: self.remotePath,
+                localDirectoryURL: folderURL,
+                progress: self.transferProgressHandler()
             )
-
-            for file in files {
-                try Task.checkCancellation()
-                let remoteFile = self.remotePath.appendingRemotePathComponent(file.name)
-                let localURL = folderURL.appendingPathComponent(file.name)
-                let completedBeforeFile = completedBeforeCurrentFile
-                try await self.service.downloadFile(
-                    config: self.connectionConfig(),
-                    remoteFilePath: remoteFile,
-                    localURL: localURL,
-                    progress: { [weak self] progress in
-                        let aggregateProgress = TransferProgress(
-                            completedBytes: completedBeforeFile + progress.completedBytes,
-                            totalBytes: totalBytes > 0 ? totalBytes : progress.totalBytes
-                        )
-                        await self?.updateTransferProgress(aggregateProgress)
-                    }
-                )
-                completedBeforeCurrentFile += file.sizeBytes
-            }
         }
     }
 
-    private func downloadPromisedFile(item: RemoteItem, remoteFilePath: String, localURL: URL) async throws {
+    private func downloadPromisedItem(item: RemoteItem, remoteFilePath: String, localURL: URL) async throws {
         guard !isBusy else {
             throw AppOperationError.busy
         }
@@ -342,12 +320,22 @@ final class AppViewModel: ObservableObject {
             )
 
             let transferTask = Task { @MainActor in
-                try await self.service.downloadFile(
-                    config: self.connectionConfig(),
-                    remoteFilePath: remoteFilePath,
-                    localURL: localURL,
-                    progress: self.transferProgressHandler()
-                )
+                if item.isDirectory {
+                    try await self.service.downloadItems(
+                        config: self.connectionConfig(),
+                        remoteItems: [item],
+                        remoteDirectoryPath: remoteFilePath.deletingLastRemotePathComponent(),
+                        localDirectoryURL: localURL.deletingLastPathComponent(),
+                        progress: self.transferProgressHandler()
+                    )
+                } else {
+                    try await self.service.downloadFile(
+                        config: self.connectionConfig(),
+                        remoteFilePath: remoteFilePath,
+                        localURL: localURL,
+                        progress: self.transferProgressHandler()
+                    )
+                }
             }
 
             self.currentTransferTask = transferTask
@@ -409,11 +397,42 @@ final class AppViewModel: ObservableObject {
         alert.alertStyle = .warning
         alert.messageText = "Delete \(item.name)?"
         alert.informativeText = item.isDirectory
-            ? "This will delete the selected remote directory if it is empty."
+            ? "This will recursively delete the selected remote directory and all of its contents."
             : "This will delete the selected remote file."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmReplaceIfNeeded(_ names: [String], locationDescription: String) -> Bool {
+        let uniqueNames = Array(Set(names)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        guard !uniqueNames.isEmpty else {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = uniqueNames.count == 1
+            ? "Replace \(uniqueNames[0])?"
+            : "Replace \(uniqueNames.count) existing items?"
+        alert.informativeText = replaceInformativeText(for: uniqueNames, locationDescription: locationDescription)
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func replaceInformativeText(for names: [String], locationDescription: String) -> String {
+        let visibleNames = names.prefix(8).map { "- \($0)" }.joined(separator: "\n")
+        let remainingCount = names.count - 8
+        let remainingText = remainingCount > 0 ? "\n- \(remainingCount) more..." : ""
+
+        return """
+        The following items already exist \(locationDescription). Replacing them may overwrite their current contents.
+
+        \(visibleNames)\(remainingText)
+        """
     }
 
     private func startBusyOperation(
@@ -611,15 +630,9 @@ final class AppViewModel: ObservableObject {
     private static let minimumTransferFractionUpdate = 0.01
     private static let transferOverlayDelay = 1.5
 
-    private static func isRegularFile(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-    }
-
-    private static func localFileSize(_ url: URL) -> Int64 {
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
-            return 0
-        }
-        return Int64(size)
+    private static func isUploadableItem(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+        return values?.isRegularFile == true || values?.isDirectory == true
     }
 }
 

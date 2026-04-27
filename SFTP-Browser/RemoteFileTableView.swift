@@ -36,6 +36,8 @@ struct RemoteFileTableView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         private static let nameColumnID = NSUserInterfaceItemIdentifier("name")
         private static let sizeColumnID = NSUserInterfaceItemIdentifier("size")
+        private static let modifiedColumnID = NSUserInterfaceItemIdentifier("modified")
+        private static let permissionsColumnID = NSUserInterfaceItemIdentifier("permissions")
 
         var parent: RemoteFileTableView
 
@@ -67,7 +69,6 @@ struct RemoteFileTableView: NSViewRepresentable {
         private func configureTableView() {
             tableView.dataSource = self
             tableView.delegate = self
-            tableView.headerView = nil
             tableView.allowsMultipleSelection = true
             tableView.allowsEmptySelection = true
             tableView.selectionHighlightStyle = .regular
@@ -90,17 +91,31 @@ struct RemoteFileTableView: NSViewRepresentable {
             let nameColumn = NSTableColumn(identifier: Self.nameColumnID)
             nameColumn.title = "Name"
             nameColumn.minWidth = 220
-            nameColumn.width = 520
+            nameColumn.width = 360
             nameColumn.resizingMask = .autoresizingMask
 
             let sizeColumn = NSTableColumn(identifier: Self.sizeColumnID)
             sizeColumn.title = "Size"
             sizeColumn.minWidth = 90
-            sizeColumn.width = 120
+            sizeColumn.width = 110
             sizeColumn.resizingMask = .userResizingMask
+
+            let modifiedColumn = NSTableColumn(identifier: Self.modifiedColumnID)
+            modifiedColumn.title = "Modified"
+            modifiedColumn.minWidth = 130
+            modifiedColumn.width = 150
+            modifiedColumn.resizingMask = .userResizingMask
+
+            let permissionsColumn = NSTableColumn(identifier: Self.permissionsColumnID)
+            permissionsColumn.title = "Permissions"
+            permissionsColumn.minWidth = 96
+            permissionsColumn.width = 108
+            permissionsColumn.resizingMask = .userResizingMask
 
             tableView.addTableColumn(nameColumn)
             tableView.addTableColumn(sizeColumn)
+            tableView.addTableColumn(modifiedColumn)
+            tableView.addTableColumn(permissionsColumn)
         }
 
         private func configureScrollView() {
@@ -195,7 +210,7 @@ struct RemoteFileTableView: NSViewRepresentable {
             )
             renameItem.target = self
             renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
-            renameItem.isEnabled = parent.actionsEnabled
+            renameItem.isEnabled = parent.actionsEnabled && tableView.selectedRowIndexes.count <= 1
             menu.addItem(renameItem)
 
             let deleteItem = NSMenuItem(
@@ -216,7 +231,7 @@ struct RemoteFileTableView: NSViewRepresentable {
 
         @objc
         private func handleRenameMenuAction() {
-            guard let contextMenuTargetItem else {
+            guard let contextMenuTargetItem, tableView.selectedRowIndexes.count <= 1 else {
                 return
             }
             parent.onRename(contextMenuTargetItem)
@@ -274,7 +289,6 @@ struct RemoteFileTableView: NSViewRepresentable {
             guard
                 parent.actionsEnabled,
                 let item = item(at: row),
-                !item.isDirectory,
                 let writer = parent.makeFilePromiseWriter(item)
             else {
                 return nil
@@ -329,9 +343,25 @@ struct RemoteFileTableView: NSViewRepresentable {
                 return cell
             }
 
-            let text = item.isDirectory ? "" : item.sizeDescription
+            let text: String
+            let alignment: NSTextAlignment
+            switch columnID {
+            case Self.sizeColumnID:
+                text = item.isDirectory ? "" : item.sizeDescription
+                alignment = .right
+            case Self.modifiedColumnID:
+                text = item.modifiedDescription
+                alignment = .left
+            case Self.permissionsColumnID:
+                text = item.permissionsDescription
+                alignment = .left
+            default:
+                text = ""
+                alignment = .left
+            }
+
             let textField = NSTextField(labelWithString: text)
-            textField.alignment = .right
+            textField.alignment = alignment
             textField.lineBreakMode = .byTruncatingTail
             textField.textColor = .secondaryLabelColor
             textField.translatesAutoresizingMaskIntoConstraints = false

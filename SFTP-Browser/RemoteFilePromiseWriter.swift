@@ -26,6 +26,10 @@ final class RemoteFilePromiseWriter: NSObject, NSFilePromiseProviderDelegate {
     }
 
     var fileType: String {
+        if item.isDirectory {
+            return UTType.folder.identifier
+        }
+
         let pathExtension = (item.name as NSString).pathExtension
         return UTType(filenameExtension: pathExtension)?.identifier ?? UTType.data.identifier
     }
