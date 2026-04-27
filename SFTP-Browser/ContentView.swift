@@ -34,7 +34,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .overlay {
-            if viewModel.isBusyOverlayVisible {
+            if viewModel.isBusyOverlayVisible || viewModel.isTransferOverlayVisible {
                 busyOverlay
             }
         }
@@ -122,27 +122,40 @@ struct ContentView: View {
     }
 
     private var busyOverlay: some View {
-        ZStack {
+        let activeTransferJob = viewModel.activeTransferJob
+        let progress = activeTransferJob?.progress ?? viewModel.transferProgress
+        let message = activeTransferJob?.title ?? viewModel.busyMessage
+        let progressText = activeTransferJob?.progressText ?? viewModel.transferProgressText
+
+        return ZStack {
             Color.black.opacity(0.08)
             VStack(spacing: 12) {
-                if let transferProgress = viewModel.transferProgress {
-                    ProgressView(value: transferProgress)
+                if let progress {
+                    ProgressView(value: progress)
                         .frame(width: 240)
                 } else {
                     ProgressView()
                         .controlSize(.large)
                 }
-                Text(viewModel.busyMessage)
+                Text(message)
                     .font(.headline)
-                if !viewModel.transferProgressText.isEmpty {
-                    Text(viewModel.transferProgressText)
+                if !progressText.isEmpty {
+                    Text(progressText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("Please wait until the current operation finishes.")
+                Text(activeTransferJob == nil ? "Please wait until the current operation finishes." : "Transfers run one at a time. Queued transfers start automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if viewModel.canCancelBusyOperation {
+                if activeTransferJob != nil {
+                    Button(role: .cancel) {
+                        viewModel.cancelActiveTransfer()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(viewModel.isCancellingTransfer)
+                } else if viewModel.canCancelBusyOperation {
                     Button(role: .cancel) {
                         viewModel.cancelBusyOperation()
                     } label: {
@@ -273,8 +286,22 @@ struct ContentView: View {
     private var footer: some View {
         VStack(spacing: 0) {
             Divider()
+            if !viewModel.transferJobs.isEmpty {
+                TransferQueueFooter(
+                    jobs: viewModel.transferJobs,
+                    summary: viewModel.transferQueueSummary,
+                    hasFinishedTransfers: viewModel.hasFinishedTransfers,
+                    onCancel: { id in
+                        viewModel.cancelTransfer(id)
+                    },
+                    onClearFinished: {
+                        viewModel.clearFinishedTransfers()
+                    }
+                )
+                Divider()
+            }
             HStack(spacing: 8) {
-                if viewModel.isBusy {
+                if viewModel.isBusy || viewModel.activeTransferJob != nil {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -425,6 +452,128 @@ struct ContentView: View {
             trimmed.removeLast()
         }
         return trimmed
+    }
+}
+
+private struct TransferQueueFooter: View {
+    let jobs: [TransferJob]
+    let summary: String
+    let hasFinishedTransfers: Bool
+    let onCancel: (TransferJob.ID) -> Void
+    let onClearFinished: () -> Void
+
+    private var visibleJobs: [TransferJob] {
+        let runningJobs = jobs.filter { $0.status == .running }
+        let otherJobs = jobs.filter { $0.status != .running }
+        let remainingSlots = max(0, 4 - runningJobs.count)
+        return runningJobs + Array(otherJobs.suffix(remainingSlots))
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Label("Transfers", systemImage: "arrow.up.arrow.down")
+                    .font(.caption.weight(.semibold))
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if hasFinishedTransfers {
+                    Button {
+                        onClearFinished()
+                    } label: {
+                        Label("Clear Finished", systemImage: "checkmark.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Clear Finished Transfers")
+                }
+            }
+
+            ForEach(visibleJobs) { job in
+                TransferQueueRow(job: job, onCancel: onCancel)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
+private struct TransferQueueRow: View {
+    let job: TransferJob
+    let onCancel: (TransferJob.ID) -> Void
+
+    private var canCancel: Bool {
+        job.status == .queued || job.status == .running
+    }
+
+    private var statusColor: Color {
+        switch job.status {
+        case .failed:
+            return .red
+        case .cancelled:
+            return .secondary
+        case .completed:
+            return .green
+        case .queued, .running:
+            return .secondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: job.kind.systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(job.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(job.status.label)
+                        .font(.caption2)
+                        .foregroundStyle(statusColor)
+                }
+
+                HStack(spacing: 8) {
+                    if job.status == .running {
+                        if let progress = job.progress {
+                            ProgressView(value: progress)
+                                .frame(width: 120)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 120)
+                        }
+                    } else if job.status == .queued {
+                        ProgressView(value: 0)
+                            .frame(width: 120)
+                    }
+
+                    Text(job.progressText.isEmpty ? job.detail : job.progressText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if canCancel {
+                Button(role: .cancel) {
+                    onCancel(job.id)
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Cancel Transfer")
+            }
+        }
     }
 }
 

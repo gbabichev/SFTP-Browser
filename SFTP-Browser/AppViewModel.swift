@@ -27,12 +27,19 @@ final class AppViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var items: [RemoteItem] = []
     @Published var selectedItemIDs = Set<RemoteItem.ID>()
+    @Published var transferJobs: [TransferJob] = []
+    @Published var isTransferOverlayVisible = false
+    @Published var isCancellingTransfer = false
 
     private let service: SFTPService
     private let knownHostStore: KnownHostStore
     private var currentBusyTask: Task<Void, Never>?
     private var currentTransferTask: Task<Void, any Error>?
     private var busyOverlayDelayTask: Task<Void, Never>?
+    private var transferOverlayDelayTask: Task<Void, Never>?
+    private var transferQueueTask: Task<Void, Never>?
+    private var queuedTransferOperations: [QueuedTransferOperation] = []
+    private var currentTransferJobID: TransferJob.ID?
     private var transferStartedAt: Date?
     private var lastTransferUIUpdateAt: Date?
     private var lastDisplayedCompletedBytes: Int64 = 0
@@ -58,6 +65,12 @@ final class AppViewModel: ObservableObject {
             }
             return busyMessage
         }
+        if let activeTransferJob {
+            if activeTransferJob.progressText.isEmpty {
+                return activeTransferJob.title
+            }
+            return "\(activeTransferJob.title) \(activeTransferJob.progressText)"
+        }
         if isConnected {
             return "Connected to \(username)@\(host)"
         }
@@ -78,6 +91,33 @@ final class AppViewModel: ObservableObject {
         !selectedItems.isEmpty
     }
 
+    var activeTransferJob: TransferJob? {
+        transferJobs.first { $0.status == .running }
+    }
+
+    var hasFinishedTransfers: Bool {
+        transferJobs.contains { $0.isFinished }
+    }
+
+    var transferQueueSummary: String {
+        let runningCount = transferJobs.filter { $0.status == .running }.count
+        let queuedCount = transferJobs.filter { $0.status == .queued }.count
+        let failedCount = transferJobs.filter { $0.status == .failed }.count
+
+        var parts: [String] = []
+        if runningCount > 0 {
+            parts.append("\(runningCount) active")
+        }
+        if queuedCount > 0 {
+            parts.append("\(queuedCount) queued")
+        }
+        if failedCount > 0 {
+            parts.append("\(failedCount) failed")
+        }
+
+        return parts.isEmpty ? "Idle" : parts.joined(separator: ", ")
+    }
+
     func toggleConnection() {
         if isConnected {
             disconnect()
@@ -93,6 +133,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func disconnect() {
+        cancelAllTransfers()
         isConnected = false
         items = []
         selectedItemIDs.removeAll()
@@ -150,17 +191,20 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        startBusyOperation(
-            message: uploadURLs.count == 1 ? "Uploading \(uploadURLs[0].lastPathComponent)..." : "Uploading \(uploadURLs.count) items...",
-            canCancel: true
-        ) {
+        let config = connectionConfig()
+        let targetRemotePath = remotePath
+        let title = uploadURLs.count == 1 ? "Uploading \(uploadURLs[0].lastPathComponent)" : "Uploading \(uploadURLs.count) items"
+        enqueueTransfer(kind: .upload, title: title, detail: targetRemotePath) { progress in
             try await self.service.uploadItems(
-                config: self.connectionConfig(),
+                config: config,
                 localURLs: uploadURLs,
-                remoteDirectoryPath: self.remotePath,
-                progress: self.transferProgressHandler()
+                remoteDirectoryPath: targetRemotePath,
+                progress: progress
             )
-            try await self.loadCurrentDirectory()
+        } onSuccess: {
+            if self.isConnected {
+                try await self.loadCurrentDirectory()
+            }
         }
     }
 
@@ -178,12 +222,13 @@ final class AppViewModel: ObservableObject {
         panel.nameFieldStringValue = selectedItem.name
         if panel.runModal() == .OK, let url = panel.url {
             let remoteFile = remotePath.appendingRemotePathComponent(selectedItem.name)
-            startBusyOperation(message: "Downloading \(selectedItem.name)...", canCancel: true) {
+            let config = connectionConfig()
+            enqueueTransfer(kind: .download, title: "Downloading \(selectedItem.name)", detail: url.deletingLastPathComponent().path) { progress in
                 try await self.service.downloadFile(
-                    config: self.connectionConfig(),
+                    config: config,
                     remoteFilePath: remoteFile,
                     localURL: url,
-                    progress: self.transferProgressHandler()
+                    progress: progress
                 )
             }
         }
@@ -235,7 +280,38 @@ final class AppViewModel: ObservableObject {
         isCancellingBusyOperation = true
         busyMessage = "Cancelling..."
         currentBusyTask?.cancel()
+    }
+
+    func cancelActiveTransfer() {
+        guard currentTransferJobID != nil, !isCancellingTransfer else {
+            return
+        }
+
+        isCancellingTransfer = true
+        updateTransferJob(currentTransferJobID) { job in
+            job.progressText = "Cancelling..."
+        }
         currentTransferTask?.cancel()
+    }
+
+    func cancelTransfer(_ id: TransferJob.ID) {
+        guard let job = transferJobs.first(where: { $0.id == id }) else {
+            return
+        }
+
+        switch job.status {
+        case .queued:
+            queuedTransferOperations.removeAll { $0.id == id }
+            finishTransferJob(id, status: .cancelled, errorDescription: nil)
+        case .running:
+            cancelActiveTransfer()
+        case .completed, .failed, .cancelled:
+            break
+        }
+    }
+
+    func clearFinishedTransfers() {
+        transferJobs.removeAll { $0.isFinished }
     }
 
     func filePromiseWriter(for item: RemoteItem) -> RemoteFilePromiseWriter? {
@@ -316,16 +392,16 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        startBusyOperation(
-            message: items.count == 1 ? "Downloading \(items[0].name)..." : "Downloading \(items.count) items...",
-            canCancel: true
-        ) {
+        let config = connectionConfig()
+        let sourceRemotePath = remotePath
+        let title = items.count == 1 ? "Downloading \(items[0].name)" : "Downloading \(items.count) items"
+        enqueueTransfer(kind: .download, title: title, detail: folderURL.path) { progress in
             try await self.service.downloadItems(
-                config: self.connectionConfig(),
+                config: config,
                 remoteItems: items,
-                remoteDirectoryPath: self.remotePath,
+                remoteDirectoryPath: sourceRemotePath,
                 localDirectoryURL: folderURL,
-                progress: self.transferProgressHandler()
+                progress: progress
             )
         }
     }
@@ -335,32 +411,159 @@ final class AppViewModel: ObservableObject {
             throw AppOperationError.busy
         }
 
-        try await runBusyThrowing(message: "Downloading \(item.name)...", canCancel: true) {
-            self.updateTransferProgress(
-                TransferProgress(completedBytes: 0, totalBytes: item.sizeBytes > 0 ? item.sizeBytes : nil)
-            )
-
-            let transferTask = Task { @MainActor in
-                if item.isDirectory {
-                    try await self.service.downloadItems(
-                        config: self.connectionConfig(),
-                        remoteItems: [item],
-                        remoteDirectoryPath: remoteFilePath.deletingLastRemotePathComponent(),
-                        localDirectoryURL: localURL.deletingLastPathComponent(),
-                        progress: self.transferProgressHandler()
-                    )
-                } else {
-                    try await self.service.downloadFile(
-                        config: self.connectionConfig(),
-                        remoteFilePath: remoteFilePath,
-                        localURL: localURL,
-                        progress: self.transferProgressHandler()
-                    )
+        let config = connectionConfig()
+        try await withCheckedThrowingContinuation { continuation in
+            enqueueTransfer(
+                kind: .download,
+                title: "Downloading \(item.name)",
+                detail: localURL.deletingLastPathComponent().path,
+                work: { progress in
+                    await progress(TransferProgress(completedBytes: 0, totalBytes: item.sizeBytes > 0 ? item.sizeBytes : nil))
+                    if item.isDirectory {
+                        try await self.service.downloadItems(
+                            config: config,
+                            remoteItems: [item],
+                            remoteDirectoryPath: remoteFilePath.deletingLastRemotePathComponent(),
+                            localDirectoryURL: localURL.deletingLastPathComponent(),
+                            progress: progress
+                        )
+                    } else {
+                        try await self.service.downloadFile(
+                            config: config,
+                            remoteFilePath: remoteFilePath,
+                            localURL: localURL,
+                            progress: progress
+                        )
+                    }
+                },
+                onFinish: { result in
+                    continuation.resume(with: result)
                 }
+            )
+        }
+    }
+
+    private func enqueueTransfer(
+        kind: TransferJob.Kind,
+        title: String,
+        detail: String,
+        work: @escaping @MainActor (_ progress: @escaping TransferProgressHandler) async throws -> Void,
+        onSuccess: (@MainActor () async throws -> Void)? = nil,
+        onFinish: (@MainActor (Result<Void, any Error>) -> Void)? = nil
+    ) {
+        let job = TransferJob(
+            kind: kind,
+            title: title,
+            detail: detail,
+            status: .queued,
+            progress: nil,
+            progressText: "Queued",
+            enqueuedAt: Date()
+        )
+        errorMessage = nil
+        transferJobs.append(job)
+        queuedTransferOperations.append(
+            QueuedTransferOperation(
+                id: job.id,
+                work: work,
+                onSuccess: onSuccess,
+                onFinish: onFinish
+            )
+        )
+        startTransferQueueIfNeeded()
+    }
+
+    private func startTransferQueueIfNeeded() {
+        guard transferQueueTask == nil else {
+            return
+        }
+
+        transferQueueTask = Task { @MainActor [weak self] in
+            await self?.drainTransferQueue()
+        }
+    }
+
+    private func drainTransferQueue() async {
+        while !queuedTransferOperations.isEmpty {
+            let operation = queuedTransferOperations.removeFirst()
+            guard transferJobs.contains(where: { $0.id == operation.id && $0.status == .queued }) else {
+                continue
             }
 
-            self.currentTransferTask = transferTask
-            try await transferTask.value
+            currentTransferJobID = operation.id
+            isCancellingTransfer = false
+            resetTransferTiming()
+            transferProgress = nil
+            transferProgressText = ""
+            updateTransferJob(operation.id) { job in
+                job.status = .running
+                job.progressText = "Starting..."
+                job.startedAt = Date()
+            }
+            showTransferOverlay(afterDelay: true)
+
+            let transferTask = Task { @MainActor in
+                try await operation.work(self.transferProgressHandler(for: operation.id))
+            }
+            currentTransferTask = transferTask
+
+            do {
+                try await transferTask.value
+                if let onSuccess = operation.onSuccess {
+                    try? await onSuccess()
+                }
+                finishTransferJob(operation.id, status: .completed, errorDescription: nil)
+                operation.onFinish?(.success(()))
+            } catch {
+                let status: TransferJob.Status = error is CancellationError ? .cancelled : .failed
+                let message = status == .cancelled ? nil : error.localizedDescription
+                finishTransferJob(operation.id, status: status, errorDescription: message)
+                if status == .failed {
+                    errorMessage = error.localizedDescription
+                }
+                operation.onFinish?(.failure(error))
+            }
+
+            currentTransferTask = nil
+            currentTransferJobID = nil
+            isCancellingTransfer = false
+            hideTransferOverlay()
+            resetTransferTiming()
+        }
+
+        transferQueueTask = nil
+        if !queuedTransferOperations.isEmpty {
+            startTransferQueueIfNeeded()
+        }
+    }
+
+    private func finishTransferJob(_ id: TransferJob.ID?, status: TransferJob.Status, errorDescription: String?) {
+        updateTransferJob(id) { job in
+            job.status = status
+            job.errorDescription = errorDescription
+            job.completedAt = Date()
+            switch status {
+            case .completed:
+                job.progress = 1
+                job.progressText = "Completed"
+            case .failed:
+                job.progressText = errorDescription ?? "Failed"
+            case .cancelled:
+                job.progressText = "Cancelled"
+            case .queued, .running:
+                break
+            }
+        }
+    }
+
+    private func cancelAllTransfers() {
+        let queuedIDs = queuedTransferOperations.map(\.id)
+        queuedTransferOperations.removeAll()
+        for id in queuedIDs {
+            finishTransferJob(id, status: .cancelled, errorDescription: nil)
+        }
+        if currentTransferJobID != nil {
+            cancelActiveTransfer()
         }
     }
 
@@ -539,7 +742,6 @@ final class AppViewModel: ObservableObject {
             transferProgress = nil
             transferProgressText = ""
             currentBusyTask = nil
-            currentTransferTask = nil
             resetTransferTiming()
         }
         do {
@@ -573,13 +775,13 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func transferProgressHandler() -> TransferProgressHandler {
+    private func transferProgressHandler(for jobID: TransferJob.ID? = nil) -> TransferProgressHandler {
         { [weak self] progress in
-            await self?.updateTransferProgress(progress)
+            await self?.updateTransferProgress(progress, for: jobID)
         }
     }
 
-    private func updateTransferProgress(_ progress: TransferProgress) {
+    private func updateTransferProgress(_ progress: TransferProgress, for jobID: TransferJob.ID? = nil) {
         let now = Date()
         if transferStartedAt == nil {
             transferStartedAt = now
@@ -600,10 +802,51 @@ final class AppViewModel: ObservableObject {
                 totalBytes: totalBytes,
                 now: now
             )
+            updateTransferJob(jobID) { job in
+                job.progress = fraction
+                job.progressText = self.transferProgressText
+            }
         } else {
             transferProgress = nil
             transferProgressText = "\(Self.byteCountFormatter.string(fromByteCount: progress.completedBytes)) transferred"
+            updateTransferJob(jobID) { job in
+                job.progress = nil
+                job.progressText = self.transferProgressText
+            }
         }
+    }
+
+    private func updateTransferJob(_ id: TransferJob.ID?, update: (inout TransferJob) -> Void) {
+        guard let id, let index = transferJobs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        update(&transferJobs[index])
+    }
+
+    private func showTransferOverlay(afterDelay: Bool) {
+        transferOverlayDelayTask?.cancel()
+        isTransferOverlayVisible = false
+
+        guard afterDelay else {
+            isTransferOverlayVisible = true
+            return
+        }
+
+        transferOverlayDelayTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.transferOverlayDelay))
+            guard let self, !Task.isCancelled, self.activeTransferJob != nil else {
+                return
+            }
+
+            self.isTransferOverlayVisible = true
+        }
+    }
+
+    private func hideTransferOverlay() {
+        transferOverlayDelayTask?.cancel()
+        transferOverlayDelayTask = nil
+        isTransferOverlayVisible = false
     }
 
     private func shouldRenderTransferProgress(_ progress: TransferProgress, now: Date) -> Bool {
@@ -701,6 +944,73 @@ private enum AppOperationError: LocalizedError {
             return "Another operation is already running."
         }
     }
+}
+
+struct TransferJob: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case upload
+        case download
+
+        var systemImage: String {
+            switch self {
+            case .upload:
+                return "square.and.arrow.up"
+            case .download:
+                return "square.and.arrow.down"
+            }
+        }
+    }
+
+    enum Status: Equatable {
+        case queued
+        case running
+        case completed
+        case failed
+        case cancelled
+
+        var label: String {
+            switch self {
+            case .queued:
+                return "Queued"
+            case .running:
+                return "Running"
+            case .completed:
+                return "Done"
+            case .failed:
+                return "Failed"
+            case .cancelled:
+                return "Cancelled"
+            }
+        }
+    }
+
+    let id = UUID()
+    let kind: Kind
+    let title: String
+    let detail: String
+    var status: Status
+    var progress: Double?
+    var progressText: String
+    let enqueuedAt: Date
+    var startedAt: Date?
+    var completedAt: Date?
+    var errorDescription: String?
+
+    var isFinished: Bool {
+        switch status {
+        case .completed, .failed, .cancelled:
+            return true
+        case .queued, .running:
+            return false
+        }
+    }
+}
+
+private struct QueuedTransferOperation {
+    let id: TransferJob.ID
+    let work: @MainActor (_ progress: @escaping TransferProgressHandler) async throws -> Void
+    let onSuccess: (@MainActor () async throws -> Void)?
+    let onFinish: (@MainActor (Result<Void, any Error>) -> Void)?
 }
 
 private extension String {
