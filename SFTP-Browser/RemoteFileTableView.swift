@@ -15,6 +15,8 @@ struct RemoteFileTableView: NSViewRepresentable {
     let onOpen: (RemoteItem) -> Void
     let onRename: (RemoteItem) -> Void
     let onDelete: (RemoteItem) -> Void
+    let onUpload: ([URL]) -> Void
+    let makeFilePromiseWriter: (RemoteItem) -> RemoteFilePromiseWriter?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -41,6 +43,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         private let contextMenu = NSMenu(title: "Remote Item")
         private var isApplyingSelection = false
         private var contextMenuTargetItem: RemoteItem?
+        private var activeFilePromiseWriters: [RemoteFilePromiseWriter] = []
 
         init(_ parent: RemoteFileTableView) {
             self.parent = parent
@@ -74,6 +77,8 @@ struct RemoteFileTableView: NSViewRepresentable {
             tableView.backgroundColor = .textBackgroundColor
             tableView.doubleAction = #selector(handleDoubleClick)
             tableView.target = self
+            tableView.registerForDraggedTypes([.fileURL])
+            tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
 
             contextMenu.delegate = self
             contextMenu.autoenablesItems = false
@@ -148,6 +153,16 @@ struct RemoteFileTableView: NSViewRepresentable {
             return nil
         }
 
+        private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [
+                .urlReadingFileURLsOnly: true
+            ]
+            let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) ?? []
+            return objects.compactMap { object in
+                (object as? URL) ?? (object as? NSURL)?.absoluteURL
+            }
+        }
+
         @objc
         private func handleDoubleClick() {
             guard let item = item(at: tableView.clickedRow) else {
@@ -210,6 +225,49 @@ struct RemoteFileTableView: NSViewRepresentable {
                 return
             }
             parent.selectedItemIDs = selectedItemIDsFromTable()
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            validateDrop info: any NSDraggingInfo,
+            proposedRow row: Int,
+            proposedDropOperation dropOperation: NSTableView.DropOperation
+        ) -> NSDragOperation {
+            guard parent.actionsEnabled, !fileURLs(from: info.draggingPasteboard).isEmpty else {
+                return []
+            }
+
+            tableView.setDropRow(-1, dropOperation: .on)
+            return .copy
+        }
+
+        func tableView(
+            _ tableView: NSTableView,
+            acceptDrop info: any NSDraggingInfo,
+            row: Int,
+            dropOperation: NSTableView.DropOperation
+        ) -> Bool {
+            let urls = fileURLs(from: info.draggingPasteboard)
+            guard parent.actionsEnabled, !urls.isEmpty else {
+                return false
+            }
+
+            parent.onUpload(urls)
+            return true
+        }
+
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+            guard
+                parent.actionsEnabled,
+                let item = item(at: row),
+                !item.isDirectory,
+                let writer = parent.makeFilePromiseWriter(item)
+            else {
+                return nil
+            }
+
+            activeFilePromiseWriters.append(writer)
+            return NSFilePromiseProvider(fileType: writer.fileType, delegate: writer)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

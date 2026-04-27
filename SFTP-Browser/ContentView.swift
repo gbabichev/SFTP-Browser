@@ -181,6 +181,12 @@ struct ContentView: View {
                 },
                 onDelete: { item in
                     viewModel.delete(item)
+                },
+                onUpload: { urls in
+                    viewModel.upload(urls)
+                },
+                makeFilePromiseWriter: { item in
+                    viewModel.filePromiseWriter(for: item)
                 }
             )
         }

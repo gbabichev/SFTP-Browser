@@ -30,6 +30,7 @@ final class AppViewModel: ObservableObject {
 
     private let service: SFTPService
     private var currentBusyTask: Task<Void, Never>?
+    private var currentTransferTask: Task<Void, any Error>?
     private var busyOverlayDelayTask: Task<Void, Never>?
     private var transferStartedAt: Date?
     private var lastTransferUIUpdateAt: Date?
@@ -126,20 +127,51 @@ final class AppViewModel: ObservableObject {
 
     func upload() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        if panel.runModal() == .OK, let url = panel.url {
-            startBusyOperation(message: "Uploading \(url.lastPathComponent)...", canCancel: true) {
+        if panel.runModal() == .OK {
+            upload(panel.urls)
+        }
+    }
+
+    func upload(_ urls: [URL]) {
+        let fileURLs = urls.filter(Self.isRegularFile)
+        guard !fileURLs.isEmpty else {
+            errorMessage = "Drop one or more files to upload."
+            return
+        }
+
+        startBusyOperation(
+            message: fileURLs.count == 1 ? "Uploading \(fileURLs[0].lastPathComponent)..." : "Uploading \(fileURLs.count) files...",
+            canCancel: true
+        ) {
+            let totalBytes = fileURLs.map(Self.localFileSize).reduce(0, +)
+            var completedBeforeCurrentFile: Int64 = 0
+            self.updateTransferProgress(
+                TransferProgress(completedBytes: 0, totalBytes: totalBytes > 0 ? totalBytes : nil)
+            )
+
+            for url in fileURLs {
+                try Task.checkCancellation()
+                let completedBeforeFile = completedBeforeCurrentFile
                 try await self.service.uploadFile(
                     config: self.connectionConfig(),
                     localURL: url,
                     remotePath: self.remotePath,
-                    progress: self.transferProgressHandler()
+                    progress: { [weak self] progress in
+                        let aggregateProgress = TransferProgress(
+                            completedBytes: completedBeforeFile + progress.completedBytes,
+                            totalBytes: totalBytes > 0 ? totalBytes : progress.totalBytes
+                        )
+                        await self?.updateTransferProgress(aggregateProgress)
+                    }
                 )
-                try Task.checkCancellation()
-                try await self.loadCurrentDirectory()
+                completedBeforeCurrentFile += Self.localFileSize(url)
             }
+
+            try Task.checkCancellation()
+            try await self.loadCurrentDirectory()
         }
     }
 
@@ -202,6 +234,28 @@ final class AppViewModel: ObservableObject {
         isCancellingBusyOperation = true
         busyMessage = "Cancelling..."
         currentBusyTask?.cancel()
+        currentTransferTask?.cancel()
+    }
+
+    func filePromiseWriter(for item: RemoteItem) -> RemoteFilePromiseWriter? {
+        guard isConnected, !isBusy, !item.isDirectory else {
+            return nil
+        }
+
+        let promisedRemoteFilePath = remotePath.appendingRemotePathComponent(item.name)
+        return RemoteFilePromiseWriter(
+            item: item
+        ) { [weak self] destinationURL in
+            guard let self else {
+                throw CancellationError()
+            }
+
+            try await self.downloadPromisedFile(
+                item: item,
+                remoteFilePath: promisedRemoteFilePath,
+                localURL: destinationURL
+            )
+        }
     }
 
     private func connectionConfig() -> SFTPConnectionConfig {
@@ -265,6 +319,30 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func downloadPromisedFile(item: RemoteItem, remoteFilePath: String, localURL: URL) async throws {
+        guard !isBusy else {
+            throw AppOperationError.busy
+        }
+
+        try await runBusyThrowing(message: "Downloading \(item.name)...", canCancel: true) {
+            self.updateTransferProgress(
+                TransferProgress(completedBytes: 0, totalBytes: item.sizeBytes > 0 ? item.sizeBytes : nil)
+            )
+
+            let transferTask = Task { @MainActor in
+                try await self.service.downloadFile(
+                    config: self.connectionConfig(),
+                    remoteFilePath: remoteFilePath,
+                    localURL: localURL,
+                    progress: self.transferProgressHandler()
+                )
+            }
+
+            self.currentTransferTask = transferTask
+            try await transferTask.value
+        }
+    }
+
     private func promptForRename(currentName: String) -> String? {
         let alert = NSAlert()
         alert.messageText = "Rename"
@@ -319,6 +397,14 @@ final class AppViewModel: ObservableObject {
     }
 
     private func runBusy(message: String = "Working...", canCancel: Bool = false, _ work: @escaping () async throws -> Void) async {
+        do {
+            try await runBusyThrowing(message: message, canCancel: canCancel, work)
+        } catch {
+            return
+        }
+    }
+
+    private func runBusyThrowing(message: String = "Working...", canCancel: Bool = false, _ work: @escaping () async throws -> Void) async throws {
         errorMessage = nil
         transferProgress = nil
         transferProgressText = ""
@@ -339,14 +425,18 @@ final class AppViewModel: ObservableObject {
             transferProgress = nil
             transferProgressText = ""
             currentBusyTask = nil
+            currentTransferTask = nil
             resetTransferTiming()
         }
         do {
             try await work()
-        } catch is CancellationError {
-            errorMessage = "Transfer cancelled."
         } catch {
-            errorMessage = error.localizedDescription
+            if error is CancellationError {
+                errorMessage = "Transfer cancelled."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+            throw error
         }
     }
 
@@ -481,6 +571,28 @@ final class AppViewModel: ObservableObject {
     private static let minimumTransferByteUpdate: Int64 = 1_000_000
     private static let minimumTransferFractionUpdate = 0.01
     private static let transferOverlayDelay = 1.5
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+
+    private static func localFileSize(_ url: URL) -> Int64 {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            return 0
+        }
+        return Int64(size)
+    }
+}
+
+private enum AppOperationError: LocalizedError {
+    case busy
+
+    var errorDescription: String? {
+        switch self {
+        case .busy:
+            return "Another operation is already running."
+        }
+    }
 }
 
 private extension String {
