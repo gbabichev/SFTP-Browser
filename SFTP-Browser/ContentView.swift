@@ -9,6 +9,12 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
+    @AppStorage("connection.host") private var storedHost = ""
+    @AppStorage("connection.port") private var storedPort = 22
+    @AppStorage("connection.username") private var storedUsername = ""
+    @AppStorage("connection.remotePath") private var storedRemotePath = "."
+
+    private let passwordStore = KeychainPasswordStore()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,15 +37,7 @@ struct ContentView: View {
                         systemImage: viewModel.isConnected ? "bolt.slash" : "bolt"
                     )
                 }
-                .keyboardShortcut(.defaultAction)
                 .disabled(!viewModel.canConnect)
-
-                Button {
-                    viewModel.goUp()
-                } label: {
-                    Label("Up", systemImage: "arrow.up")
-                }
-                .disabled(!viewModel.isConnected || viewModel.isBusy)
 
                 Button {
                     viewModel.refresh()
@@ -65,6 +63,22 @@ struct ContentView: View {
                 .disabled(!viewModel.isConnected || viewModel.isBusy || !viewModel.canDownloadSelection)
             }
         }
+        .onAppear(perform: restoreStoredConnection)
+        .onChange(of: viewModel.host) { _, host in
+            storedHost = host
+        }
+        .onChange(of: viewModel.port) { _, port in
+            storedPort = port
+        }
+        .onChange(of: viewModel.username) { _, username in
+            storedUsername = username
+        }
+        .onChange(of: viewModel.remotePath) { _, remotePath in
+            storedRemotePath = remotePath
+        }
+        .onChange(of: viewModel.password) { _, password in
+            passwordStore.savePassword(password)
+        }
     }
 
     private var connectionPanel: some View {
@@ -75,11 +89,30 @@ struct ContentView: View {
                     .frame(width: 80)
                 TextField("Username", text: $viewModel.username)
                 SecureField("Password", text: $viewModel.password)
+                    .onSubmit {
+                        if !viewModel.isConnected, viewModel.canConnect {
+                            viewModel.connect()
+                        }
+                    }
             }
 
             GridRow {
-                TextField("Remote Path", text: $viewModel.remotePath)
-                    .gridCellColumns(4)
+                HStack(spacing: 8) {
+                    TextField("Remote Path", text: $viewModel.remotePath)
+                        .onSubmit {
+                            viewModel.submitRemotePath()
+                        }
+
+                    Button {
+                        viewModel.goUp()
+                    } label: {
+                        Label("Parent Folder", systemImage: "arrow.up")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Parent Folder")
+                    .disabled(!viewModel.isConnected || viewModel.isBusy)
+                }
+                .gridCellColumns(4)
             }
         }
         .textFieldStyle(.roundedBorder)
@@ -126,6 +159,14 @@ struct ContentView: View {
             .padding(.vertical, 8)
             .background(.bar)
         }
+    }
+
+    private func restoreStoredConnection() {
+        viewModel.host = storedHost
+        viewModel.port = storedPort
+        viewModel.username = storedUsername
+        viewModel.remotePath = storedRemotePath
+        viewModel.password = passwordStore.loadPassword()
     }
 }
 

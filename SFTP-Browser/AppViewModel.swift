@@ -70,6 +70,7 @@ final class AppViewModel: ObservableObject {
     func connect() {
         Task {
             await runBusy {
+                self.remotePath = self.remotePath.normalizedRemotePath()
                 let config = self.connectionConfig()
                 let listed = try await self.service.listDirectory(config: config, path: self.remotePath)
                 self.items = listed
@@ -90,6 +91,15 @@ final class AppViewModel: ObservableObject {
             await runBusy {
                 try await self.loadCurrentDirectory()
             }
+        }
+    }
+
+    func submitRemotePath() {
+        remotePath = remotePath.normalizedRemotePath()
+        if isConnected {
+            refresh()
+        } else if canConnect {
+            connect()
         }
     }
 
@@ -181,6 +191,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func loadCurrentDirectory() async throws {
+        remotePath = remotePath.normalizedRemotePath()
         let listed = try await service.listDirectory(config: connectionConfig(), path: remotePath)
         items = listed
         selectedItemIDs.removeAll()
@@ -257,6 +268,11 @@ final class AppViewModel: ObservableObject {
 }
 
 private extension String {
+    func normalizedRemotePath() -> String {
+        let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "." : trimmed.trimmingTrailingSlash()
+    }
+
     func appendingRemotePathComponent(_ component: String) -> String {
         let base = self.trimmingCharacters(in: .whitespacesAndNewlines)
         if base.isEmpty || base == "." {
