@@ -11,6 +11,11 @@ import NIO
 
 struct CitadelSFTPService: SFTPService {
     private let chunkSize: UInt32 = 256 * 1024
+    private let knownHostStore: KnownHostStore
+
+    init(knownHostStore: KnownHostStore) {
+        self.knownHostStore = knownHostStore
+    }
 
     func listDirectory(config: SFTPConnectionConfig, path: String) async throws -> [RemoteItem] {
         try await withSFTP(config: config) { sftp in
@@ -384,7 +389,7 @@ struct CitadelSFTPService: SFTPService {
             authenticationMethod: {
                 .passwordBased(username: config.username, password: config.password)
             },
-            hostKeyValidator: .acceptAnything()
+            hostKeyValidator: knownHostStore.validator(host: config.host, port: config.port)
         )
 
         let client = try await SSHClient.connect(to: settings)

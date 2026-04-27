@@ -29,6 +29,7 @@ final class AppViewModel: ObservableObject {
     @Published var selectedItemIDs = Set<RemoteItem.ID>()
 
     private let service: SFTPService
+    private let knownHostStore: KnownHostStore
     private var currentBusyTask: Task<Void, Never>?
     private var currentTransferTask: Task<Void, any Error>?
     private var busyOverlayDelayTask: Task<Void, Never>?
@@ -37,11 +38,14 @@ final class AppViewModel: ObservableObject {
     private var lastDisplayedCompletedBytes: Int64 = 0
 
     init() {
-        self.service = CitadelSFTPService()
+        let knownHostStore = KnownHostStore()
+        self.knownHostStore = knownHostStore
+        self.service = CitadelSFTPService(knownHostStore: knownHostStore)
     }
 
-    init(service: SFTPService) {
+    init(service: SFTPService, knownHostStore: KnownHostStore) {
         self.service = service
+        self.knownHostStore = knownHostStore
     }
 
     var statusText: String {
@@ -84,11 +88,7 @@ final class AppViewModel: ObservableObject {
 
     func connect() {
         startBusyOperation(message: "Connecting...") {
-            self.remotePath = self.remotePath.normalizedRemotePath()
-            let config = self.connectionConfig()
-            let listed = try await self.service.listDirectory(config: config, path: self.remotePath)
-            self.items = listed
-            self.isConnected = true
+            try await self.connectWithHostKeyHandling()
         }
     }
 
@@ -275,6 +275,27 @@ final class AppViewModel: ObservableObject {
         selectedItemIDs.removeAll()
     }
 
+    private func connectWithHostKeyHandling() async throws {
+        do {
+            try await connectAndLoadDirectory()
+        } catch let hostKeyError as HostKeyValidationError {
+            guard confirmHostKeyTrust(hostKeyError) else {
+                throw HostKeyRejectedError()
+            }
+
+            knownHostStore.trust(hostKeyError.presented)
+            try await connectAndLoadDirectory()
+        }
+    }
+
+    private func connectAndLoadDirectory() async throws {
+        remotePath = remotePath.normalizedRemotePath()
+        let listed = try await service.listDirectory(config: connectionConfig(), path: remotePath)
+        items = listed
+        selectedItemIDs.removeAll()
+        isConnected = true
+    }
+
     private func download(_ items: [RemoteItem]) {
         let panel = NSOpenPanel()
         panel.message = "Choose a folder for the selected downloads."
@@ -419,6 +440,41 @@ final class AppViewModel: ObservableObject {
             : "Replace \(uniqueNames.count) existing items?"
         alert.informativeText = replaceInformativeText(for: uniqueNames, locationDescription: locationDescription)
         alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmHostKeyTrust(_ error: HostKeyValidationError) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+
+        switch error {
+        case .unknown(let presented):
+            alert.messageText = "Trust Host Key?"
+            alert.informativeText = """
+            The server at \(presented.host):\(presented.port) is not in your trusted hosts.
+
+            Algorithm: \(presented.algorithm)
+            Fingerprint: \(presented.fingerprint)
+
+            Only continue if this fingerprint matches the server you expect.
+            """
+            alert.addButton(withTitle: "Trust and Connect")
+
+        case .changed(let expected, let presented):
+            alert.messageText = "Host Key Changed"
+            alert.informativeText = """
+            The host key for \(presented.host):\(presented.port) does not match the trusted key.
+
+            Previously trusted: \(expected.fingerprint)
+            Presented: \(presented.fingerprint)
+            Algorithm: \(presented.algorithm)
+
+            This can indicate a server rebuild or a man-in-the-middle attack. Only continue if you expected this change.
+            """
+            alert.addButton(withTitle: "Replace and Connect")
+        }
+
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
