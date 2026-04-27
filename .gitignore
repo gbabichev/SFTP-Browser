@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# Xcode build products
+DerivedData/
+.derivedData/
+build/
+Build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager build artifacts
+.build/
+.swiftpm/
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace/
+
+# Code coverage and profiling
+*.profraw
+*.profdata
+*.coverage
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+
+# Editor and tooling folders
+.vscode/
+.idea/

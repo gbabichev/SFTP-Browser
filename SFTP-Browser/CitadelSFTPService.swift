@@ -108,6 +108,12 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
+    func createDirectory(config: SFTPConnectionConfig, remotePath: String) async throws {
+        try await withSFTP(config: config) { sftp in
+            try await sftp.createDirectory(atPath: remotePath)
+        }
+    }
+
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws {
         try await withSFTP(config: config) { sftp in
             if isDirectory {

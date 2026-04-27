@@ -200,6 +200,18 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func createFolder() {
+        guard let folderName = promptForFolderName() else {
+            return
+        }
+
+        let folderPath = remotePath.appendingRemotePathComponent(folderName)
+        startBusyOperation(message: "Creating \(folderName)...") {
+            try await self.service.createDirectory(config: self.connectionConfig(), remotePath: folderPath)
+            try await self.loadCurrentDirectory()
+        }
+    }
+
     func rename(_ item: RemoteItem) {
         guard let newName = promptForRename(currentName: item.name) else {
             return
@@ -343,6 +355,29 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func promptForFolderName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Folder"
+        alert.informativeText = "Enter a name for the new remote folder."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        textField.stringValue = "Untitled Folder"
+        textField.selectText(nil)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        let folderName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidRemoteItemName(folderName) else {
+            return nil
+        }
+        return folderName
+    }
+
     private func promptForRename(currentName: String) -> String? {
         let alert = NSAlert()
         alert.messageText = "Rename"
@@ -359,10 +394,14 @@ final class AppViewModel: ObservableObject {
         }
 
         let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newName.isEmpty, newName != currentName, !newName.contains("/") else {
+        guard newName != currentName, isValidRemoteItemName(newName) else {
             return nil
         }
         return newName
+    }
+
+    private func isValidRemoteItemName(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.contains("/")
     }
 
     private func confirmDelete(_ item: RemoteItem) -> Bool {

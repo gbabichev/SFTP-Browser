@@ -52,7 +52,16 @@ struct ContentView: View {
                 .disabled(!viewModel.isConnected || viewModel.isBusy)
             }
 
+            ToolbarSpacer(.fixed, placement: .automatic)
+            
             ToolbarItemGroup {
+                Button {
+                    viewModel.createFolder()
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+                .disabled(!viewModel.isConnected || viewModel.isBusy)
+
                 Button {
                     viewModel.upload()
                 } label: {
@@ -181,6 +190,9 @@ struct ContentView: View {
                 },
                 onDelete: { item in
                     viewModel.delete(item)
+                },
+                onCreateFolder: {
+                    viewModel.createFolder()
                 },
                 onUpload: { urls in
                     viewModel.upload(urls)

@@ -15,6 +15,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     let onOpen: (RemoteItem) -> Void
     let onRename: (RemoteItem) -> Void
     let onDelete: (RemoteItem) -> Void
+    let onCreateFolder: () -> Void
     let onUpload: ([URL]) -> Void
     let makeFilePromiseWriter: (RemoteItem) -> RemoteFilePromiseWriter?
 
@@ -142,12 +143,8 @@ struct RemoteFileTableView: NSViewRepresentable {
         }
 
         private func contextTargetItem() -> RemoteItem? {
-            if tableView.clickedRow >= 0, let item = item(at: tableView.clickedRow) {
+            if tableView.contextClickedRow >= 0, let item = item(at: tableView.contextClickedRow) {
                 return item
-            }
-
-            if let firstSelectedRow = tableView.selectedRowIndexes.first {
-                return item(at: firstSelectedRow)
             }
 
             return nil
@@ -175,9 +172,21 @@ struct RemoteFileTableView: NSViewRepresentable {
             menu.removeAllItems()
             contextMenuTargetItem = contextTargetItem()
 
+            let newFolderItem = NSMenuItem(
+                title: "New Folder",
+                action: #selector(handleNewFolderMenuAction),
+                keyEquivalent: ""
+            )
+            newFolderItem.target = self
+            newFolderItem.image = NSImage(systemSymbolName: "folder.badge.plus", accessibilityDescription: nil)
+            newFolderItem.isEnabled = parent.actionsEnabled
+            menu.addItem(newFolderItem)
+
             guard contextMenuTargetItem != nil else {
                 return
             }
+
+            menu.addItem(.separator())
 
             let renameItem = NSMenuItem(
                 title: "Rename",
@@ -198,6 +207,11 @@ struct RemoteFileTableView: NSViewRepresentable {
             deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
             deleteItem.isEnabled = parent.actionsEnabled
             menu.addItem(deleteItem)
+        }
+
+        @objc
+        private func handleNewFolderMenuAction() {
+            parent.onCreateFolder()
         }
 
         @objc
@@ -338,9 +352,13 @@ struct RemoteFileTableView: NSViewRepresentable {
 
 @MainActor
 private final class ContextMenuTableView: NSTableView {
+    private(set) var contextClickedRow = -1
+
     private func applyContextSelection(for event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
+        contextClickedRow = row
+
         guard row >= 0 else {
             return
         }
@@ -352,12 +370,6 @@ private final class ContextMenuTableView: NSTableView {
 
     override func rightMouseDown(with event: NSEvent) {
         applyContextSelection(for: event)
-
-        if let contextMenu = menu(for: event) {
-            NSMenu.popUpContextMenu(contextMenu, with: event, for: self)
-            return
-        }
-
         super.rightMouseDown(with: event)
     }
 
