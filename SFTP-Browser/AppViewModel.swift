@@ -15,7 +15,7 @@ final class AppViewModel: ObservableObject {
     @Published var port = 22
     @Published var username = ""
     @Published var password = ""
-    @Published var remotePath = "."
+    @Published var remotePath = "/"
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var isBusyOverlayVisible = false
@@ -637,7 +637,7 @@ private enum AppOperationError: LocalizedError {
 private extension String {
     func normalizedRemotePath() -> String {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "." : trimmed.trimmingTrailingSlash()
+        return trimmed.isEmpty ? "/" : trimmed.trimmingTrailingSlash()
     }
 
     func appendingRemotePathComponent(_ component: String) -> String {
@@ -654,10 +654,10 @@ private extension String {
     func deletingLastRemotePathComponent() -> String {
         let base = self.trimmingCharacters(in: .whitespacesAndNewlines).trimmingTrailingSlash()
         if base.isEmpty || base == "." || base == "/" {
-            return "."
+            return "/"
         }
         guard let slashIndex = base.lastIndex(of: "/") else {
-            return "."
+            return "/"
         }
         if slashIndex == base.startIndex {
             return "/"

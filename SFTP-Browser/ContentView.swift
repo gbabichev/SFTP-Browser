@@ -12,7 +12,7 @@ struct ContentView: View {
     @AppStorage("connection.host") private var storedHost = ""
     @AppStorage("connection.port") private var storedPort = 22
     @AppStorage("connection.username") private var storedUsername = ""
-    @AppStorage("connection.remotePath") private var storedRemotePath = "."
+    @AppStorage("connection.remotePath") private var storedRemotePath = "/"
 
     private let passwordStore = KeychainPasswordStore()
 
@@ -227,7 +227,7 @@ struct ContentView: View {
         viewModel.host = storedHost
         viewModel.port = storedPort
         viewModel.username = storedUsername
-        viewModel.remotePath = storedRemotePath
+        viewModel.remotePath = storedRemotePath == "." ? "/" : storedRemotePath
         viewModel.password = passwordStore.loadPassword()
     }
 }
