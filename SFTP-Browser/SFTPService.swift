@@ -25,10 +25,17 @@ struct RemoteItem: Identifiable, Hashable, Sendable {
     }
 }
 
+struct TransferProgress: Sendable {
+    let completedBytes: Int64
+    let totalBytes: Int64?
+}
+
+typealias TransferProgressHandler = @Sendable (TransferProgress) async -> Void
+
 protocol SFTPService: Sendable {
     func listDirectory(config: SFTPConnectionConfig, path: String) async throws -> [RemoteItem]
-    func uploadFile(config: SFTPConnectionConfig, localURL: URL, remotePath: String) async throws
-    func downloadFile(config: SFTPConnectionConfig, remoteFilePath: String, localURL: URL) async throws
+    func uploadFile(config: SFTPConnectionConfig, localURL: URL, remotePath: String, progress: TransferProgressHandler?) async throws
+    func downloadFile(config: SFTPConnectionConfig, remoteFilePath: String, localURL: URL, progress: TransferProgressHandler?) async throws
     func renameItem(config: SFTPConnectionConfig, oldPath: String, newPath: String) async throws
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws
 }

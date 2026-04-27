@@ -18,11 +18,22 @@ final class AppViewModel: ObservableObject {
     @Published var remotePath = "."
     @Published var isConnected = false
     @Published var isBusy = false
+    @Published var isBusyOverlayVisible = false
+    @Published var canCancelBusyOperation = false
+    @Published var isCancellingBusyOperation = false
+    @Published var busyMessage = "Working..."
+    @Published var transferProgress: Double?
+    @Published var transferProgressText = ""
     @Published var errorMessage: String?
     @Published var items: [RemoteItem] = []
     @Published var selectedItemIDs = Set<RemoteItem.ID>()
 
     private let service: SFTPService
+    private var currentBusyTask: Task<Void, Never>?
+    private var busyOverlayDelayTask: Task<Void, Never>?
+    private var transferStartedAt: Date?
+    private var lastTransferUIUpdateAt: Date?
+    private var lastDisplayedCompletedBytes: Int64 = 0
 
     init() {
         self.service = CitadelSFTPService()
@@ -37,7 +48,10 @@ final class AppViewModel: ObservableObject {
             return errorMessage
         }
         if isBusy {
-            return "Working..."
+            if !transferProgressText.isEmpty {
+                return "\(busyMessage) \(transferProgressText)"
+            }
+            return busyMessage
         }
         if isConnected {
             return "Connected to \(username)@\(host)"
@@ -68,14 +82,12 @@ final class AppViewModel: ObservableObject {
     }
 
     func connect() {
-        Task {
-            await runBusy {
-                self.remotePath = self.remotePath.normalizedRemotePath()
-                let config = self.connectionConfig()
-                let listed = try await self.service.listDirectory(config: config, path: self.remotePath)
-                self.items = listed
-                self.isConnected = true
-            }
+        startBusyOperation(message: "Connecting...") {
+            self.remotePath = self.remotePath.normalizedRemotePath()
+            let config = self.connectionConfig()
+            let listed = try await self.service.listDirectory(config: config, path: self.remotePath)
+            self.items = listed
+            self.isConnected = true
         }
     }
 
@@ -87,10 +99,8 @@ final class AppViewModel: ObservableObject {
     }
 
     func refresh() {
-        Task {
-            await runBusy {
-                try await self.loadCurrentDirectory()
-            }
+        startBusyOperation(message: "Refreshing...") {
+            try await self.loadCurrentDirectory()
         }
     }
 
@@ -120,11 +130,15 @@ final class AppViewModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                await runBusy {
-                    try await self.service.uploadFile(config: self.connectionConfig(), localURL: url, remotePath: self.remotePath)
-                    try await self.loadCurrentDirectory()
-                }
+            startBusyOperation(message: "Uploading \(url.lastPathComponent)...", canCancel: true) {
+                try await self.service.uploadFile(
+                    config: self.connectionConfig(),
+                    localURL: url,
+                    remotePath: self.remotePath,
+                    progress: self.transferProgressHandler()
+                )
+                try Task.checkCancellation()
+                try await self.loadCurrentDirectory()
             }
         }
     }
@@ -143,10 +157,13 @@ final class AppViewModel: ObservableObject {
         panel.nameFieldStringValue = selectedItem.name
         if panel.runModal() == .OK, let url = panel.url {
             let remoteFile = remotePath.appendingRemotePathComponent(selectedItem.name)
-            Task {
-                await runBusy {
-                    try await self.service.downloadFile(config: self.connectionConfig(), remoteFilePath: remoteFile, localURL: url)
-                }
+            startBusyOperation(message: "Downloading \(selectedItem.name)...", canCancel: true) {
+                try await self.service.downloadFile(
+                    config: self.connectionConfig(),
+                    remoteFilePath: remoteFile,
+                    localURL: url,
+                    progress: self.transferProgressHandler()
+                )
             }
         }
     }
@@ -159,11 +176,9 @@ final class AppViewModel: ObservableObject {
         let oldPath = remotePath.appendingRemotePathComponent(item.name)
         let newPath = remotePath.appendingRemotePathComponent(newName)
 
-        Task {
-            await runBusy {
-                try await self.service.renameItem(config: self.connectionConfig(), oldPath: oldPath, newPath: newPath)
-                try await self.loadCurrentDirectory()
-            }
+        startBusyOperation(message: "Renaming \(item.name)...") {
+            try await self.service.renameItem(config: self.connectionConfig(), oldPath: oldPath, newPath: newPath)
+            try await self.loadCurrentDirectory()
         }
     }
 
@@ -173,12 +188,20 @@ final class AppViewModel: ObservableObject {
         }
 
         let itemPath = remotePath.appendingRemotePathComponent(item.name)
-        Task {
-            await runBusy {
-                try await self.service.deleteItem(config: self.connectionConfig(), remotePath: itemPath, isDirectory: item.isDirectory)
-                try await self.loadCurrentDirectory()
-            }
+        startBusyOperation(message: "Deleting \(item.name)...") {
+            try await self.service.deleteItem(config: self.connectionConfig(), remotePath: itemPath, isDirectory: item.isDirectory)
+            try await self.loadCurrentDirectory()
         }
+    }
+
+    func cancelBusyOperation() {
+        guard canCancelBusyOperation, !isCancellingBusyOperation else {
+            return
+        }
+
+        isCancellingBusyOperation = true
+        busyMessage = "Cancelling..."
+        currentBusyTask?.cancel()
     }
 
     private func connectionConfig() -> SFTPConnectionConfig {
@@ -210,13 +233,34 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        Task {
-            await runBusy {
-                for file in files {
-                    let remoteFile = self.remotePath.appendingRemotePathComponent(file.name)
-                    let localURL = folderURL.appendingPathComponent(file.name)
-                    try await self.service.downloadFile(config: self.connectionConfig(), remoteFilePath: remoteFile, localURL: localURL)
-                }
+        startBusyOperation(
+            message: files.count == 1 ? "Downloading \(files[0].name)..." : "Downloading \(files.count) files...",
+            canCancel: true
+        ) {
+            let totalBytes = files.map(\.sizeBytes).reduce(0, +)
+            var completedBeforeCurrentFile: Int64 = 0
+            self.updateTransferProgress(
+                TransferProgress(completedBytes: 0, totalBytes: totalBytes > 0 ? totalBytes : nil)
+            )
+
+            for file in files {
+                try Task.checkCancellation()
+                let remoteFile = self.remotePath.appendingRemotePathComponent(file.name)
+                let localURL = folderURL.appendingPathComponent(file.name)
+                let completedBeforeFile = completedBeforeCurrentFile
+                try await self.service.downloadFile(
+                    config: self.connectionConfig(),
+                    remoteFilePath: remoteFile,
+                    localURL: localURL,
+                    progress: { [weak self] progress in
+                        let aggregateProgress = TransferProgress(
+                            completedBytes: completedBeforeFile + progress.completedBytes,
+                            totalBytes: totalBytes > 0 ? totalBytes : progress.totalBytes
+                        )
+                        await self?.updateTransferProgress(aggregateProgress)
+                    }
+                )
+                completedBeforeCurrentFile += file.sizeBytes
             }
         }
     }
@@ -255,16 +299,188 @@ final class AppViewModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    private func runBusy(_ work: @escaping () async throws -> Void) async {
+    private func startBusyOperation(
+        message: String = "Working...",
+        canCancel: Bool = false,
+        _ work: @escaping () async throws -> Void
+    ) {
+        guard !isBusy else {
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.runBusy(message: message, canCancel: canCancel, work)
+        }
+        currentBusyTask = task
+    }
+
+    private func runBusy(message: String = "Working...", canCancel: Bool = false, _ work: @escaping () async throws -> Void) async {
         errorMessage = nil
+        transferProgress = nil
+        transferProgressText = ""
+        resetTransferTiming()
+        busyMessage = message
         isBusy = true
-        defer { isBusy = false }
+        canCancelBusyOperation = canCancel
+        isCancellingBusyOperation = false
+        showBusyOverlay(afterDelay: canCancel)
+        defer {
+            busyOverlayDelayTask?.cancel()
+            busyOverlayDelayTask = nil
+            isBusy = false
+            isBusyOverlayVisible = false
+            canCancelBusyOperation = false
+            isCancellingBusyOperation = false
+            busyMessage = "Working..."
+            transferProgress = nil
+            transferProgressText = ""
+            currentBusyTask = nil
+            resetTransferTiming()
+        }
         do {
             try await work()
+        } catch is CancellationError {
+            errorMessage = "Transfer cancelled."
         } catch {
             errorMessage = error.localizedDescription
         }
     }
+
+    private func showBusyOverlay(afterDelay: Bool) {
+        busyOverlayDelayTask?.cancel()
+        isBusyOverlayVisible = false
+
+        guard afterDelay else {
+            isBusyOverlayVisible = true
+            return
+        }
+
+        busyOverlayDelayTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.transferOverlayDelay))
+            guard let self, !Task.isCancelled, self.isBusy, self.canCancelBusyOperation else {
+                return
+            }
+
+            self.isBusyOverlayVisible = true
+        }
+    }
+
+    private func transferProgressHandler() -> TransferProgressHandler {
+        { [weak self] progress in
+            await self?.updateTransferProgress(progress)
+        }
+    }
+
+    private func updateTransferProgress(_ progress: TransferProgress) {
+        let now = Date()
+        if transferStartedAt == nil {
+            transferStartedAt = now
+        }
+
+        guard shouldRenderTransferProgress(progress, now: now) else {
+            return
+        }
+
+        lastTransferUIUpdateAt = now
+        lastDisplayedCompletedBytes = progress.completedBytes
+
+        if let totalBytes = progress.totalBytes, totalBytes > 0 {
+            let fraction = min(max(Double(progress.completedBytes) / Double(totalBytes), 0), 1)
+            transferProgress = fraction
+            transferProgressText = transferStatusText(
+                completedBytes: progress.completedBytes,
+                totalBytes: totalBytes,
+                now: now
+            )
+        } else {
+            transferProgress = nil
+            transferProgressText = "\(Self.byteCountFormatter.string(fromByteCount: progress.completedBytes)) transferred"
+        }
+    }
+
+    private func shouldRenderTransferProgress(_ progress: TransferProgress, now: Date) -> Bool {
+        let totalBytes = progress.totalBytes ?? 0
+        let isInitial = progress.completedBytes == 0
+        let isComplete = totalBytes > 0 && progress.completedBytes >= totalBytes
+        guard !isInitial, !isComplete else {
+            return true
+        }
+
+        guard let lastTransferUIUpdateAt else {
+            return true
+        }
+
+        let elapsedSinceLastUpdate = now.timeIntervalSince(lastTransferUIUpdateAt)
+        let byteDelta = progress.completedBytes - lastDisplayedCompletedBytes
+        let fractionDelta = totalBytes > 0 ? Double(byteDelta) / Double(totalBytes) : 0
+
+        return elapsedSinceLastUpdate >= Self.minimumTransferUIUpdateInterval
+            || byteDelta >= Self.minimumTransferByteUpdate
+            || fractionDelta >= Self.minimumTransferFractionUpdate
+    }
+
+    private func transferStatusText(completedBytes: Int64, totalBytes: Int64, now: Date) -> String {
+        let completed = Self.byteCountFormatter.string(fromByteCount: completedBytes)
+        let total = Self.byteCountFormatter.string(fromByteCount: totalBytes)
+
+        guard let etaText = transferETAText(completedBytes: completedBytes, totalBytes: totalBytes, now: now) else {
+            return "\(completed) of \(total)"
+        }
+
+        return "\(completed) of \(total) - ETA \(etaText)"
+    }
+
+    private func transferETAText(completedBytes: Int64, totalBytes: Int64, now: Date) -> String? {
+        guard
+            completedBytes > 0,
+            totalBytes > completedBytes,
+            let transferStartedAt
+        else {
+            return nil
+        }
+
+        let elapsed = now.timeIntervalSince(transferStartedAt)
+        guard elapsed >= 1 else {
+            return nil
+        }
+
+        let bytesPerSecond = Double(completedBytes) / elapsed
+        guard bytesPerSecond > 0 else {
+            return nil
+        }
+
+        let remainingSeconds = Double(totalBytes - completedBytes) / bytesPerSecond
+        return Self.durationFormatter.string(from: remainingSeconds)
+    }
+
+    private func resetTransferTiming() {
+        transferStartedAt = nil
+        lastTransferUIUpdateAt = nil
+        lastDisplayedCompletedBytes = 0
+    }
+
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 2
+        return formatter
+    }()
+
+    private static let minimumTransferUIUpdateInterval: TimeInterval = 0.25
+    private static let minimumTransferByteUpdate: Int64 = 1_000_000
+    private static let minimumTransferFractionUpdate = 0.01
+    private static let transferOverlayDelay = 1.5
 }
 
 private extension String {

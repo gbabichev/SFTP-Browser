@@ -30,8 +30,14 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
-    func uploadFile(config: SFTPConnectionConfig, localURL: URL, remotePath: String) async throws {
+    func uploadFile(
+        config: SFTPConnectionConfig,
+        localURL: URL,
+        remotePath: String,
+        progress: TransferProgressHandler?
+    ) async throws {
         let destinationPath = appendingRemotePathComponent(remotePath, localURL.lastPathComponent)
+        let totalBytes = localFileSize(at: localURL)
 
         try await withSFTP(config: config) { sftp in
             try await sftp.withFile(
@@ -44,20 +50,29 @@ struct CitadelSFTPService: SFTPService {
                 }
 
                 var offset: UInt64 = 0
+                await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
                 while true {
+                    try Task.checkCancellation()
                     let data = localFile.readData(ofLength: Int(chunkSize))
                     guard !data.isEmpty else {
                         break
                     }
 
+                    try Task.checkCancellation()
                     try await remoteFile.write(ByteBuffer(bytes: data), at: offset)
                     offset += UInt64(data.count)
+                    await progress?(TransferProgress(completedBytes: Int64(offset), totalBytes: totalBytes))
                 }
             }
         }
     }
 
-    func downloadFile(config: SFTPConnectionConfig, remoteFilePath: String, localURL: URL) async throws {
+    func downloadFile(
+        config: SFTPConnectionConfig,
+        remoteFilePath: String,
+        localURL: URL,
+        progress: TransferProgressHandler?
+    ) async throws {
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
 
         try await withSFTP(config: config) { sftp in
@@ -68,15 +83,20 @@ struct CitadelSFTPService: SFTPService {
                 }
 
                 var offset: UInt64 = 0
+                let totalBytes = try? await remoteFile.readAttributes().size.flatMap(Int64.init(exactly:))
+                await progress?(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
                 while true {
+                    try Task.checkCancellation()
                     var buffer = try await remoteFile.read(from: offset, length: chunkSize)
                     let readableBytes = buffer.readableBytes
                     guard readableBytes > 0, let bytes = buffer.readBytes(length: readableBytes) else {
                         break
                     }
 
+                    try Task.checkCancellation()
                     localFile.write(Data(bytes))
                     offset += UInt64(bytes.count)
+                    await progress?(TransferProgress(completedBytes: Int64(offset), totalBytes: totalBytes))
                 }
             }
         }
@@ -122,7 +142,7 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
-    private static func remoteItem(from component: SFTPPathComponent) -> RemoteItem {
+    nonisolated private static func remoteItem(from component: SFTPPathComponent) -> RemoteItem {
         let permissions = component.attributes.permissions
         let isDirectory = isDirectory(permissions: permissions, longname: component.longname)
         let size = component.attributes.size.flatMap(Int64.init(exactly:)) ?? 0
@@ -134,7 +154,7 @@ struct CitadelSFTPService: SFTPService {
         )
     }
 
-    private static func isDirectory(permissions: UInt32?, longname: String) -> Bool {
+    nonisolated private static func isDirectory(permissions: UInt32?, longname: String) -> Bool {
         let fileTypeMask: UInt32 = 0o170000
         let directoryType: UInt32 = 0o040000
 
@@ -155,6 +175,13 @@ struct CitadelSFTPService: SFTPService {
         }
 
         return base.trimmingTrailingSlash() + "/" + component
+    }
+
+    private func localFileSize(at url: URL) -> Int64? {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            return nil
+        }
+        return Int64(size)
     }
 }
 

@@ -27,6 +27,11 @@ struct ContentView: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 520)
+        .overlay {
+            if viewModel.isBusyOverlayVisible {
+                busyOverlay
+            }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -79,6 +84,45 @@ struct ContentView: View {
         .onChange(of: viewModel.password) { _, password in
             passwordStore.savePassword(password)
         }
+    }
+
+    private var busyOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.08)
+            VStack(spacing: 12) {
+                if let transferProgress = viewModel.transferProgress {
+                    ProgressView(value: transferProgress)
+                        .frame(width: 240)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+                Text(viewModel.busyMessage)
+                    .font(.headline)
+                if !viewModel.transferProgressText.isEmpty {
+                    Text(viewModel.transferProgressText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Please wait until the current operation finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if viewModel.canCancelBusyOperation {
+                    Button(role: .cancel) {
+                        viewModel.cancelBusyOperation()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(viewModel.isCancellingBusyOperation)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 12, y: 4)
+        }
+        .ignoresSafeArea()
     }
 
     private var connectionPanel: some View {
