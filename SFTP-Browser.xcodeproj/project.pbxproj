@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		5E3C00012F1DA144001559F7 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 5E3C00032F1DA144001559F7 /* Citadel */; };
+		5E3C00042F1DA144001559F7 /* NIO in Frameworks */ = {isa = PBXBuildFile; productRef = 5E3C00062F1DA144001559F7 /* NIO */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		5E2B33952F1DA144001559F7 /* SFTP-Browser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "SFTP-Browser.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +28,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5E3C00012F1DA144001559F7 /* Citadel in Frameworks */,
+				5E3C00042F1DA144001559F7 /* NIO in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +72,8 @@
 			);
 			name = "SFTP-Browser";
 			packageProductDependencies = (
+				5E3C00032F1DA144001559F7 /* Citadel */,
+				5E3C00062F1DA144001559F7 /* NIO */,
 			);
 			productName = "SFTP-Browser";
 			productReference = 5E2B33952F1DA144001559F7 /* SFTP-Browser.app */;
@@ -94,6 +103,10 @@
 			);
 			mainGroup = 5E2B338C2F1DA144001559F7;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5E3C00022F1DA144001559F7 /* XCRemoteSwiftPackageReference "Citadel" */,
+				5E3C00052F1DA144001559F7 /* XCRemoteSwiftPackageReference "swift-nio" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 5E2B33962F1DA144001559F7 /* Products */;
 			projectDirPath = "";
@@ -254,10 +267,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7GK58M2353;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -286,10 +298,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7GK58M2353;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -331,6 +342,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5E3C00022F1DA144001559F7 /* XCRemoteSwiftPackageReference "Citadel" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.12.1;
+			};
+		};
+		5E3C00052F1DA144001559F7 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.81.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5E3C00032F1DA144001559F7 /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E3C00022F1DA144001559F7 /* XCRemoteSwiftPackageReference "Citadel" */;
+			productName = Citadel;
+		};
+		5E3C00062F1DA144001559F7 /* NIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E3C00052F1DA144001559F7 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIO;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5E2B338D2F1DA144001559F7 /* Project object */;
 }
