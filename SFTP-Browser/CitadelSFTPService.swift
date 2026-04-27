@@ -82,6 +82,22 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
+    func renameItem(config: SFTPConnectionConfig, oldPath: String, newPath: String) async throws {
+        try await withSFTP(config: config) { sftp in
+            try await sftp.rename(at: oldPath, to: newPath)
+        }
+    }
+
+    func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws {
+        try await withSFTP(config: config) { sftp in
+            if isDirectory {
+                try await sftp.rmdir(at: remotePath)
+            } else {
+                try await sftp.remove(at: remotePath)
+            }
+        }
+    }
+
     private func withSFTP<Result>(
         config: SFTPConnectionConfig,
         _ operation: @escaping @Sendable (SFTPClient) async throws -> Result

@@ -62,7 +62,7 @@ struct ContentView: View {
                 } label: {
                     Label("Download", systemImage: "square.and.arrow.down")
                 }
-                .disabled(!viewModel.isConnected || viewModel.isBusy || viewModel.selectedItem?.isDirectory != false)
+                .disabled(!viewModel.isConnected || viewModel.isBusy || !viewModel.canDownloadSelection)
             }
         }
     }
@@ -92,25 +92,20 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
             }
-            List(selection: $viewModel.selectedItem) {
-                ForEach(viewModel.items) { item in
-                    HStack {
-                        Image(systemName: item.isDirectory ? "folder" : "doc")
-                        Text(item.name)
-                        Spacer()
-                        if !item.isDirectory {
-                            Text(item.sizeDescription)
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-                    }
-                    .tag(item)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        viewModel.open(item)
-                    }
+            RemoteFileTableView(
+                items: viewModel.items,
+                selectedItemIDs: $viewModel.selectedItemIDs,
+                actionsEnabled: viewModel.isConnected && !viewModel.isBusy,
+                onOpen: { item in
+                    viewModel.open(item)
+                },
+                onRename: { item in
+                    viewModel.rename(item)
+                },
+                onDelete: { item in
+                    viewModel.delete(item)
                 }
-            }
+            )
         }
     }
 

@@ -29,4 +29,6 @@ protocol SFTPService: Sendable {
     func listDirectory(config: SFTPConnectionConfig, path: String) async throws -> [RemoteItem]
     func uploadFile(config: SFTPConnectionConfig, localURL: URL, remotePath: String) async throws
     func downloadFile(config: SFTPConnectionConfig, remoteFilePath: String, localURL: URL) async throws
+    func renameItem(config: SFTPConnectionConfig, oldPath: String, newPath: String) async throws
+    func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws
 }
