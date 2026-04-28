@@ -43,23 +43,7 @@ struct ContentView: View {
                 connectionMenu
             }
 
-//            ToolbarSpacer(.fixed, placement: .automatic)
-            
             ToolbarItemGroup {
-                Button {
-                    viewModel.refresh()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(!viewModel.isConnected || viewModel.isBusy)
-                
-                Button {
-                    viewModel.createFolder()
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-                .disabled(!viewModel.isConnected || viewModel.isBusy)
-
                 Button {
                     viewModel.upload()
                 } label: {
@@ -214,49 +198,99 @@ struct ContentView: View {
     }
 
     private var connectionPanel: some View {
-        Grid(horizontalSpacing: 10, verticalSpacing: 8) {
-            GridRow {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "network")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+
                 TextField("Host", text: $viewModel.host)
+                    .frame(minWidth: 160)
+
                 TextField("Port", value: $viewModel.port, format: .number)
-                    .frame(width: 80)
+                    .frame(width: 68)
+
+                Divider()
+                    .frame(height: 18)
+
+                Image(systemName: "person")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+
                 TextField("Username", text: $viewModel.username)
+                    .frame(minWidth: 130)
+
                 SecureField("Password", text: $viewModel.password)
+                    .frame(minWidth: 130)
                     .onSubmit {
                         if !viewModel.isConnected, viewModel.canConnect {
                             viewModel.connect()
                         }
                     }
             }
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
 
-            GridRow {
-                HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Remote Files")
+                    .font(.headline)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+
                     TextField("Remote Path", text: $viewModel.remotePath)
+                        .textFieldStyle(.plain)
                         .onSubmit {
                             viewModel.submitRemotePath()
                         }
-
-                    Button {
-                        viewModel.goUp()
-                    } label: {
-                        Label("Parent Folder", systemImage: "arrow.up")
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("Parent Folder")
-                    .disabled(!viewModel.isConnected || viewModel.isBusy)
                 }
-                .gridCellColumns(4)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 0.5)
+                )
+                .frame(maxWidth: .infinity)
+
+                Button {
+                    viewModel.goUp()
+                } label: {
+                    Label("Parent Folder", systemImage: "arrow.up")
+                }
+                .labelStyle(.iconOnly)
+                .help("Parent Folder")
+                .disabled(!viewModel.isConnected || viewModel.isBusy)
+
+                Button {
+                    viewModel.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .labelStyle(.iconOnly)
+                .help("Refresh")
+                .disabled(!viewModel.isConnected || viewModel.isBusy)
+
+                Button {
+                    viewModel.createFolder()
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+                .labelStyle(.iconOnly)
+                .help("New Folder")
+                .disabled(!viewModel.isConnected || viewModel.isBusy)
             }
+            .controlSize(.small)
         }
-        .textFieldStyle(.roundedBorder)
     }
 
     private var browserPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Remote Files")
-                    .font(.headline)
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: 0) {
             RemoteFileTableView(
                 items: viewModel.items,
                 selectedItemIDs: $viewModel.selectedItemIDs,
