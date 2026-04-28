@@ -1,5 +1,9 @@
 # SFTP Browser
 
+<p align="center">
+  <img src="./docs/icon.png" alt="Code app icon" width="96" height="96">
+</p>
+
 `SFTP Browser` is a small macOS app for connecting to an SFTP server, browsing remote files, and moving files or folders between your Mac and the server.
 
 It is built for simple username and password SFTP workflows. The app does not require `/usr/bin/sftp`, `sshpass`, Homebrew, or any other command-line SFTP tool to be installed on the system.
