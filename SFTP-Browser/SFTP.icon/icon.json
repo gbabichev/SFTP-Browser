@@ -1,0 +1,36 @@
+{
+  "fill" : {
+    "solid" : "display-p3:0.74562,0.81167,0.87908,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "SFTP.png",
+          "name" : "SFTP"
+        }
+      ],
+      "position" : {
+        "scale" : 1.25,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
