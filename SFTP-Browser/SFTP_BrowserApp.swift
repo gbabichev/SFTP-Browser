@@ -12,6 +12,7 @@ struct SFTP_BrowserApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
     }
 }
