@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject private var aboutController: AboutOverlayController
     @StateObject private var viewModel = AppViewModel()
     @AppStorage("connection.host") private var storedHost = ""
     @AppStorage("connection.port") private var storedPort = 22
@@ -18,6 +19,7 @@ struct ContentView: View {
     @State private var selectedProfileID: ConnectionProfile.ID?
     @State private var isProfilesPresented = false
     @State private var isTrustedHostsPresented = false
+    @State private var isPasswordVisible = false
 
     private let profileStore = ConnectionProfileStore()
     private let knownHostStore = KnownHostStore()
@@ -36,6 +38,11 @@ struct ContentView: View {
         .overlay {
             if viewModel.isBusyOverlayVisible || viewModel.isTransferOverlayVisible {
                 busyOverlay
+            }
+        }
+        .overlay {
+            if aboutController.isPresented {
+                AboutOverlayView(isPresented: $aboutController.isPresented)
             }
         }
         .toolbar {
@@ -220,13 +227,31 @@ struct ContentView: View {
                 TextField("Username", text: $viewModel.username)
                     .frame(minWidth: 130)
 
-                SecureField("Password", text: $viewModel.password)
-                    .frame(minWidth: 130)
+                HStack(spacing: 4) {
+                    Group {
+                        if isPasswordVisible {
+                            TextField("Password", text: $viewModel.password)
+                        } else {
+                            SecureField("Password", text: $viewModel.password)
+                        }
+                    }
                     .onSubmit {
                         if !viewModel.isConnected, viewModel.canConnect {
                             viewModel.connect()
                         }
                     }
+
+                    Button {
+                        isPasswordVisible.toggle()
+                    } label: {
+                        Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help(isPasswordVisible ? "Hide Password" : "Show Password")
+                    .accessibilityLabel(isPasswordVisible ? "Hide Password" : "Show Password")
+                }
+                .frame(minWidth: 150)
             }
             .textFieldStyle(.roundedBorder)
             .controlSize(.small)

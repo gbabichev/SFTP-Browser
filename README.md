@@ -1,75 +1,118 @@
 # SFTP Browser
 
-SFTP Browser is a small macOS SwiftUI app for browsing an SFTP server with username and password authentication.
+`SFTP Browser` is a small macOS app for connecting to an SFTP server, browsing remote files, and moving files or folders between your Mac and the server.
+
+It is built for simple username and password SFTP workflows. The app does not require `/usr/bin/sftp`, `sshpass`, Homebrew, or any other command-line SFTP tool to be installed on the system.
+
+## What The App Does
 
 The app lets you:
 
-- Connect to an SFTP server by host, port, username, and password.
-- Browse a remote directory.
-- Open folders by double-clicking them.
-- Move up one remote directory.
-- Upload a local file to the current remote directory.
-- Download a selected remote file to your Mac.
+- connect to an SFTP server with host, port, username, password, and starting folder
+- save connection profiles for servers you use often
+- remember the last connection details on launch
+- browse remote folders in a table view
+- jump to a path by typing it into the folder field
+- go up a folder, refresh, or create a new folder from the toolbar
+- select one or more files or folders
+- sort by column headers
+- upload files and folders
+- download files and folders
+- drag files or folders into the app to upload
+- drag files or folders out to Finder to download
+- rename or delete remote items from the right-click menu
+- see transfer progress, ETA, queued transfers, and completed transfers
+- cancel active or queued transfers
 
-This is intentionally a simple front end around core SFTP operations. It does not depend on `/usr/bin/sftp`, `sshpass`, Homebrew, or any external command-line tool installed on the user's system.
+## Connections
 
-## Implementation
+SFTP Browser supports username and password authentication.
 
-The app is organized around a small `SFTPService` protocol:
+Connection details are shown at the top of the window:
 
-- `SFTPService.swift` defines the connection config, remote file model, and service operations.
-- `CitadelSFTPService.swift` implements those operations using an in-app Swift SFTP client.
-- `AppViewModel.swift` owns connection state and calls the service.
-- `ContentView.swift` provides the SwiftUI interface.
+- `Host`
+- `Port`
+- `Username`
+- `Password`
+- `Remote Path`
 
-The current SFTP backend opens a new SSH/SFTP connection per operation. That keeps the implementation simple and reliable for a small browser. If the app grows, the next step would be keeping one connection open for the session and adding progress reporting.
+The password field includes a small visibility toggle so you can briefly check what you typed before connecting.
 
-## Dependencies
+Saved profiles are available from the connection menu. Profiles store the server details and remote path. Passwords are stored separately in Keychain.
 
-The app uses Swift Package Manager dependencies that are compiled and bundled with the app.
+## File Browsing
+
+The remote file list supports common browser actions:
+
+- double-click a folder to open it
+- select files or folders before downloading
+- use multi-select for batch downloads
+- right-click files or folders for rename and delete
+- right-click empty space to create a folder
+- click column headers to sort
+
+The table shows basic remote metadata:
+
+- name
+- size
+- modified date
+- permissions
+
+## Transfers
+
+Uploads and downloads run through a transfer queue.
+
+For larger transfers, the app shows:
+
+- current progress
+- transferred bytes
+- estimated time remaining
+- cancel controls
+
+Small transfers may complete without showing a blocking overlay. Longer transfers show progress so it is clear that work is still happening.
+
+Folder uploads, folder downloads, and folder deletion are recursive.
+
+## Security
+
+SFTP Browser verifies host keys.
+
+The first time you connect to a server, the app asks whether to trust the presented host key. After that, future connections compare the server key against the trusted value. If the key changes, the app blocks the connection until the trusted host entry is reviewed.
+
+Passwords are stored in macOS Keychain. Connection profiles and trusted host records are stored locally in app preferences.
+
+## Dependencies / Attribution
+
+SFTP Browser uses Swift Package Manager dependencies that are built into the app. These dependencies are used so the app can speak SFTP directly instead of launching an external command-line tool.
 
 ### Citadel
 
 Repository: `https://github.com/orlandos-nl/Citadel.git`
 
-Citadel provides the high-level SSH and SFTP client API used by the app. It handles:
-
-- SSH connection setup.
-- Username/password authentication.
-- Opening an SFTP subsystem.
-- Listing remote directories.
-- Reading remote files.
-- Writing remote files.
-
-This is the dependency that replaces shelling out to `/usr/bin/sftp`.
+Citadel provides the SSH and SFTP client functionality used by the app.
 
 ### SwiftNIO
 
 Repository: `https://github.com/apple/swift-nio.git`
 
-SwiftNIO provides the asynchronous networking primitives used underneath Citadel. The app imports `NIO` directly for `ByteBuffer`, which is used when streaming upload and download data.
+SwiftNIO provides the networking foundation used by Citadel and by the app's transfer code.
 
-### Transitive Dependencies
+### Supporting Packages
 
-These are pulled in through Citadel and SwiftNIO:
+The dependency tree also includes:
 
-- `swift-nio-ssh`: SSH protocol support.
-- `swift-crypto`: cryptographic primitives used by SSH.
-- `swift-log`: logging API used by Citadel.
-- `BigInt`: large integer support for SSH cryptographic operations.
-- `swift-atomics`, `swift-collections`, `swift-asn1`, `swift-system`: supporting libraries used by the networking and crypto stack.
+- `swift-nio-ssh`
+- `swift-crypto`
+- `swift-log`
+- `BigInt`
+- `swift-atomics`
+- `swift-collections`
+- `swift-asn1`
+- `swift-system`
 
-The resolved versions are pinned in `SFTP-Browser.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+Resolved dependency versions are pinned in:
 
-## Security Notes
-
-The current implementation uses Citadel's accept-any-host-key validator. That is convenient for development, but it is not production-safe because it does not protect against man-in-the-middle attacks.
-
-Before shipping this as a real tool, add:
-
-- Host key verification, ideally with a known-hosts style store.
-- Keychain storage for saved passwords.
-- Clear handling for authentication failures and untrusted host keys.
+`SFTP-Browser.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
 
 ## Build
 
@@ -77,10 +120,22 @@ Open `SFTP-Browser.xcodeproj` in Xcode and build the `SFTP-Browser` scheme.
 
 From the command line:
 
-```sh
+```bash
 xcodebuild \
   -project SFTP-Browser.xcodeproj \
   -scheme SFTP-Browser \
   -destination generic/platform=macOS \
   build
 ```
+
+## Caveats
+
+- SFTP Browser is meant to be a simple file browser, not a full replacement for every advanced SFTP client.
+- Username and password authentication is supported. SSH key authentication is not currently exposed in the UI.
+- Update checking requires an `UpdateCheckReleasesURL` value in the app's generated Info.plist settings.
+
+## Changelog
+
+### 1.0.0
+
+- Initial release.
