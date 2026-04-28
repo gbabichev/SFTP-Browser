@@ -47,6 +47,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         private var isApplyingSelection = false
         private var contextMenuTargetItem: RemoteItem?
         private var activeFilePromiseWriters: [RemoteFilePromiseWriter] = []
+        private var displayedItems: [RemoteItem] = []
 
         init(_ parent: RemoteFileTableView) {
             self.parent = parent
@@ -62,6 +63,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         }
 
         func applyLatestModel() {
+            displayedItems = sortedItems(parent.items, using: tableView.sortDescriptors)
             tableView.reloadData()
             applySelectionToTable(parent.selectedItemIDs)
         }
@@ -93,24 +95,36 @@ struct RemoteFileTableView: NSViewRepresentable {
             nameColumn.minWidth = 220
             nameColumn.width = 360
             nameColumn.resizingMask = .autoresizingMask
+            nameColumn.sortDescriptorPrototype = NSSortDescriptor(
+                key: Self.nameColumnID.rawValue,
+                ascending: true,
+                selector: #selector(NSString.localizedStandardCompare(_:))
+            )
 
             let sizeColumn = NSTableColumn(identifier: Self.sizeColumnID)
             sizeColumn.title = "Size"
             sizeColumn.minWidth = 90
             sizeColumn.width = 110
             sizeColumn.resizingMask = .userResizingMask
+            sizeColumn.sortDescriptorPrototype = NSSortDescriptor(key: Self.sizeColumnID.rawValue, ascending: true)
 
             let modifiedColumn = NSTableColumn(identifier: Self.modifiedColumnID)
             modifiedColumn.title = "Modified"
             modifiedColumn.minWidth = 130
             modifiedColumn.width = 150
             modifiedColumn.resizingMask = .userResizingMask
+            modifiedColumn.sortDescriptorPrototype = NSSortDescriptor(key: Self.modifiedColumnID.rawValue, ascending: true)
 
             let permissionsColumn = NSTableColumn(identifier: Self.permissionsColumnID)
             permissionsColumn.title = "Permissions"
             permissionsColumn.minWidth = 96
             permissionsColumn.width = 108
             permissionsColumn.resizingMask = .userResizingMask
+            permissionsColumn.sortDescriptorPrototype = NSSortDescriptor(
+                key: Self.permissionsColumnID.rawValue,
+                ascending: true,
+                selector: #selector(NSString.localizedStandardCompare(_:))
+            )
 
             tableView.addTableColumn(nameColumn)
             tableView.addTableColumn(sizeColumn)
@@ -128,10 +142,10 @@ struct RemoteFileTableView: NSViewRepresentable {
         }
 
         private func item(at row: Int) -> RemoteItem? {
-            guard parent.items.indices.contains(row) else {
+            guard displayedItems.indices.contains(row) else {
                 return nil
             }
-            return parent.items[row]
+            return displayedItems[row]
         }
 
         private func selectedItemIDsFromTable() -> Set<RemoteItem.ID> {
@@ -150,11 +164,70 @@ struct RemoteFileTableView: NSViewRepresentable {
             defer { isApplyingSelection = false }
 
             let indexSet = IndexSet(
-                parent.items.enumerated().compactMap { index, item in
+                displayedItems.enumerated().compactMap { index, item in
                     selectedItemIDs.contains(item.id) ? index : nil
                 }
             )
             tableView.selectRowIndexes(indexSet, byExtendingSelection: false)
+        }
+
+        private func sortedItems(_ items: [RemoteItem], using sortDescriptors: [NSSortDescriptor]) -> [RemoteItem] {
+            guard let sortDescriptor = sortDescriptors.first, let key = sortDescriptor.key else {
+                return items
+            }
+
+            return items.sorted { lhs, rhs in
+                if lhs.isDirectory != rhs.isDirectory {
+                    return lhs.isDirectory && !rhs.isDirectory
+                }
+
+                let comparison = compare(lhs, rhs, key: key)
+                if comparison == .orderedSame {
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+
+                return sortDescriptor.ascending
+                    ? comparison == .orderedAscending
+                    : comparison == .orderedDescending
+            }
+        }
+
+        private func compare(_ lhs: RemoteItem, _ rhs: RemoteItem, key: String) -> ComparisonResult {
+            switch key {
+            case Self.nameColumnID.rawValue:
+                return lhs.name.localizedStandardCompare(rhs.name)
+            case Self.sizeColumnID.rawValue:
+                return compare(lhs.sizeBytes, rhs.sizeBytes)
+            case Self.modifiedColumnID.rawValue:
+                return compare(lhs.modifiedAt, rhs.modifiedAt)
+            case Self.permissionsColumnID.rawValue:
+                return lhs.permissionsDescription.localizedStandardCompare(rhs.permissionsDescription)
+            default:
+                return lhs.name.localizedStandardCompare(rhs.name)
+            }
+        }
+
+        private func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+            if lhs < rhs {
+                return .orderedAscending
+            }
+            if lhs > rhs {
+                return .orderedDescending
+            }
+            return .orderedSame
+        }
+
+        private func compare<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {
+            switch (lhs, rhs) {
+            case (.none, .none):
+                return .orderedSame
+            case (.none, .some):
+                return .orderedDescending
+            case (.some, .none):
+                return .orderedAscending
+            case let (.some(lhs), .some(rhs)):
+                return compare(lhs, rhs)
+            }
         }
 
         private func contextTargetItem() -> RemoteItem? {
@@ -246,7 +319,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.items.count
+            displayedItems.count
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -254,6 +327,12 @@ struct RemoteFileTableView: NSViewRepresentable {
                 return
             }
             parent.selectedItemIDs = selectedItemIDsFromTable()
+        }
+
+        func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            displayedItems = sortedItems(parent.items, using: tableView.sortDescriptors)
+            tableView.reloadData()
+            applySelectionToTable(parent.selectedItemIDs)
         }
 
         func tableView(
