@@ -216,6 +216,10 @@ final class AppViewModel: ObservableObject {
             if self.isConnected {
                 try await self.loadCurrentDirectory()
             }
+        } onCancel: {
+            if self.isConnected {
+                try? await self.loadCurrentDirectory()
+            }
         }
     }
 
@@ -476,6 +480,7 @@ final class AppViewModel: ObservableObject {
         detail: String,
         work: @escaping @MainActor (_ progress: @escaping TransferProgressHandler) async throws -> Void,
         onSuccess: (@MainActor () async throws -> Void)? = nil,
+        onCancel: (@MainActor () async -> Void)? = nil,
         onFinish: (@MainActor (Result<Void, any Error>) -> Void)? = nil
     ) {
         let job = TransferJob(
@@ -494,6 +499,7 @@ final class AppViewModel: ObservableObject {
                 id: job.id,
                 work: work,
                 onSuccess: onSuccess,
+                onCancel: onCancel,
                 onFinish: onFinish
             )
         )
@@ -547,6 +553,9 @@ final class AppViewModel: ObservableObject {
                 finishTransferJob(operation.id, status: status, errorDescription: message)
                 if status == .failed {
                     errorMessage = message
+                }
+                if status == .cancelled {
+                    await operation.onCancel?()
                 }
                 operation.onFinish?(.failure(error))
             }
@@ -1255,6 +1264,7 @@ private struct QueuedTransferOperation {
     let id: TransferJob.ID
     let work: @MainActor (_ progress: @escaping TransferProgressHandler) async throws -> Void
     let onSuccess: (@MainActor () async throws -> Void)?
+    let onCancel: (@MainActor () async -> Void)?
     let onFinish: (@MainActor (Result<Void, any Error>) -> Void)?
 }
 

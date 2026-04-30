@@ -111,13 +111,14 @@ struct ContentView: View {
 
     private var busyOverlay: some View {
         let activeTransferJob = viewModel.activeTransferJob
+        let isTransferOverlay = activeTransferJob != nil
         let progress = activeTransferJob?.progress ?? viewModel.transferProgress
         let message = activeTransferJob?.title ?? viewModel.busyMessage
         let progressText = activeTransferJob?.progressText ?? viewModel.transferProgressText
 
         return ZStack {
             Color.black.opacity(0.08)
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 if let progress {
                     ProgressView(value: progress)
                         .frame(width: 240)
@@ -132,9 +133,11 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(overlayDetailText(activeTransferJob: activeTransferJob))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if !isTransferOverlay {
+                    Text(overlayDetailText())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if activeTransferJob != nil {
                     Button(role: .cancel) {
                         viewModel.cancelActiveTransfer()
@@ -161,10 +164,7 @@ struct ContentView: View {
         .ignoresSafeArea()
     }
 
-    private func overlayDetailText(activeTransferJob: TransferJob?) -> String {
-        if activeTransferJob != nil {
-            return "Transfers run one at a time. Queued transfers start automatically."
-        }
+    private func overlayDetailText() -> String {
         if viewModel.canCancelBusyOperation {
             return "You can cancel this operation if it is taking too long."
         }
@@ -369,11 +369,11 @@ struct ContentView: View {
                 Divider()
             }
             HStack(spacing: 8) {
-                if viewModel.isBusy || viewModel.activeTransferJob != nil {
+                if footerShowsActivity {
                     ProgressView()
                         .controlSize(.small)
                 }
-                Text(viewModel.statusText)
+                Text(footerStatusText)
                     .font(.caption)
                     .foregroundColor(viewModel.errorMessage == nil ? Color.secondary : Color.red)
                 Spacer()
@@ -382,6 +382,20 @@ struct ContentView: View {
             .padding(.vertical, 8)
             .background(.bar)
         }
+    }
+
+    private var footerShowsActivity: Bool {
+        viewModel.isBusy && viewModel.activeTransferJob == nil
+    }
+
+    private var footerStatusText: String {
+        if viewModel.errorMessage != nil || viewModel.isBusy {
+            return viewModel.statusText
+        }
+        if viewModel.isConnected {
+            return "Connected to \(viewModel.username)@\(viewModel.host)"
+        }
+        return "Disconnected"
     }
 
     private func restoreStoredConnection() {
@@ -631,24 +645,18 @@ private struct TransferQueueRow: View {
                         .foregroundStyle(statusColor)
                 }
 
-                HStack(spacing: 8) {
-                    if job.status == .running {
-                        if let progress = job.progress {
-                            ProgressView(value: progress)
-                                .frame(width: 120)
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(width: 120)
-                        }
-                    } else if job.status == .queued {
-                        ProgressView(value: 0)
-                            .frame(width: 120)
+                if job.status == .running || job.status == .queued {
+                    if let progress = job.progress {
+                        ProgressView(value: progress)
+                            .frame(width: 160)
+                    } else {
+                        ProgressView(value: job.status == .queued ? 0 : nil)
+                            .frame(width: 160)
                     }
-
-                    Text(job.progressText.isEmpty ? job.detail : job.progressText)
+                } else if let errorDescription = job.errorDescription, !errorDescription.isEmpty {
+                    Text(errorDescription)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(statusColor)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
