@@ -97,6 +97,10 @@ final class AppViewModel: ObservableObject {
         !selectedItems.isEmpty
     }
 
+    var canDeleteSelection: Bool {
+        !selectedItems.isEmpty
+    }
+
     var activeTransferJob: TransferJob? {
         transferJobs.first { $0.status == .running }
     }
@@ -283,6 +287,24 @@ final class AppViewModel: ObservableObject {
         let itemPath = remotePath.appendingRemotePathComponent(item.name)
         startBusyOperation(message: "Deleting \(item.name)...") {
             try await self.service.deleteItem(config: self.connectionConfig(), remotePath: itemPath, isDirectory: item.isDirectory)
+            try await self.loadCurrentDirectory()
+        }
+    }
+
+    func deleteSelection() {
+        let selection = selectedItems
+        guard !selection.isEmpty, confirmDelete(selection) else {
+            return
+        }
+
+        let message = selection.count == 1 ? "Deleting \(selection[0].name)..." : "Deleting \(selection.count) items..."
+        let basePath = remotePath
+        startBusyOperation(message: message) {
+            for item in selection {
+                try Task.checkCancellation()
+                let itemPath = basePath.appendingRemotePathComponent(item.name)
+                try await self.service.deleteItem(config: self.connectionConfig(), remotePath: itemPath, isDirectory: item.isDirectory)
+            }
             try await self.loadCurrentDirectory()
         }
     }
@@ -659,6 +681,23 @@ final class AppViewModel: ObservableObject {
         alert.informativeText = item.isDirectory
             ? "This will recursively delete the selected remote directory and all of its contents."
             : "This will delete the selected remote file."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmDelete(_ items: [RemoteItem]) -> Bool {
+        guard items.count != 1 else {
+            return confirmDelete(items[0])
+        }
+
+        let directoryCount = items.filter(\.isDirectory).count
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete \(items.count) selected items?"
+        alert.informativeText = directoryCount > 0
+            ? "This will recursively delete the selected remote items, including \(directoryCount) selected folders and all of their contents."
+            : "This will delete the selected remote files."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn

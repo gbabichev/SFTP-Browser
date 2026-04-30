@@ -318,6 +318,15 @@ struct ContentView: View {
                 .labelStyle(.iconOnly)
                 .help("New Folder")
                 .disabled(!viewModel.isConnected || viewModel.isBusy)
+
+                Button(role: .destructive) {
+                    viewModel.deleteSelection()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .labelStyle(.iconOnly)
+                .help("Delete Selected Items")
+                .disabled(!viewModel.isConnected || viewModel.isBusy || !viewModel.canDeleteSelection)
             }
             .controlSize(.small)
         }
