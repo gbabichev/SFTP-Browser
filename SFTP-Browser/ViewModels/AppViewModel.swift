@@ -6,8 +6,12 @@
 //
 
 import AppKit
-import Foundation
+import Citadel
 import Combine
+import Darwin
+import Foundation
+import NIOCore
+import NIOPosix
 
 @MainActor
 final class AppViewModel: ObservableObject {
@@ -39,6 +43,8 @@ final class AppViewModel: ObservableObject {
     private var transferOverlayDelayTask: Task<Void, Never>?
     private var transferQueueTask: Task<Void, Never>?
     private var queuedTransferOperations: [QueuedTransferOperation] = []
+    private var currentBusyOperationID: UUID?
+    private var currentBusyCancellationMessage = "Operation cancelled."
     private var currentTransferJobID: TransferJob.ID?
     private var transferStartedAt: Date?
     private var lastTransferUIUpdateAt: Date?
@@ -127,7 +133,12 @@ final class AppViewModel: ObservableObject {
     }
 
     func connect() {
-        startBusyOperation(message: "Connecting...") {
+        startBusyOperation(
+            message: "Connecting...",
+            canCancel: true,
+            showsOverlayAfterDelay: true,
+            cancellationMessage: "Connection cancelled."
+        ) {
             try await self.connectWithHostKeyHandling()
         }
     }
@@ -278,8 +289,20 @@ final class AppViewModel: ObservableObject {
         }
 
         isCancellingBusyOperation = true
-        busyMessage = "Cancelling..."
+        errorMessage = currentBusyCancellationMessage
+        busyOverlayDelayTask?.cancel()
+        busyOverlayDelayTask = nil
+        isBusy = false
+        isBusyOverlayVisible = false
+        canCancelBusyOperation = false
+        isCancellingBusyOperation = false
+        busyMessage = "Working..."
+        transferProgress = nil
+        transferProgressText = ""
+        currentBusyOperationID = nil
         currentBusyTask?.cancel()
+        currentBusyTask = nil
+        resetTransferTiming()
     }
 
     func cancelActiveTransfer() {
@@ -347,6 +370,7 @@ final class AppViewModel: ObservableObject {
     private func loadCurrentDirectory() async throws {
         remotePath = remotePath.normalizedRemotePath()
         let listed = try await service.listDirectory(config: connectionConfig(), path: remotePath)
+        try Task.checkCancellation()
         items = listed
         selectedItemIDs.removeAll()
     }
@@ -355,10 +379,12 @@ final class AppViewModel: ObservableObject {
         do {
             try await connectAndLoadDirectory()
         } catch let hostKeyError as HostKeyValidationError {
+            try Task.checkCancellation()
             guard confirmHostKeyTrust(hostKeyError) else {
                 throw HostKeyRejectedError()
             }
 
+            try Task.checkCancellation()
             knownHostStore.trust(hostKeyError.presented)
             try await connectAndLoadDirectory()
         }
@@ -367,6 +393,7 @@ final class AppViewModel: ObservableObject {
     private func connectAndLoadDirectory() async throws {
         remotePath = remotePath.normalizedRemotePath()
         let listed = try await service.listDirectory(config: connectionConfig(), path: remotePath)
+        try Task.checkCancellation()
         items = listed
         selectedItemIDs.removeAll()
         isConnected = true
@@ -516,10 +543,10 @@ final class AppViewModel: ObservableObject {
                 operation.onFinish?(.success(()))
             } catch {
                 let status: TransferJob.Status = error is CancellationError ? .cancelled : .failed
-                let message = status == .cancelled ? nil : error.localizedDescription
+                let message = status == .cancelled ? nil : userFacingErrorDescription(error)
                 finishTransferJob(operation.id, status: status, errorDescription: message)
                 if status == .failed {
-                    errorMessage = error.localizedDescription
+                    errorMessage = message
                 }
                 operation.onFinish?(.failure(error))
             }
@@ -697,31 +724,69 @@ final class AppViewModel: ObservableObject {
     private func startBusyOperation(
         message: String = "Working...",
         canCancel: Bool = false,
+        showsOverlayAfterDelay: Bool = false,
+        cancellationMessage: String = "Operation cancelled.",
         _ work: @escaping () async throws -> Void
     ) {
         guard !isBusy else {
             return
         }
 
+        let operationID = UUID()
+        currentBusyOperationID = operationID
+        currentBusyCancellationMessage = cancellationMessage
+
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
 
-            await self.runBusy(message: message, canCancel: canCancel, work)
+            await self.runBusy(
+                message: message,
+                canCancel: canCancel,
+                showsOverlayAfterDelay: showsOverlayAfterDelay,
+                cancellationMessage: cancellationMessage,
+                operationID: operationID,
+                work
+            )
         }
         currentBusyTask = task
     }
 
-    private func runBusy(message: String = "Working...", canCancel: Bool = false, _ work: @escaping () async throws -> Void) async {
+    private func runBusy(
+        message: String = "Working...",
+        canCancel: Bool = false,
+        showsOverlayAfterDelay: Bool = false,
+        cancellationMessage: String = "Operation cancelled.",
+        operationID: UUID,
+        _ work: @escaping () async throws -> Void
+    ) async {
         do {
-            try await runBusyThrowing(message: message, canCancel: canCancel, work)
+            try await runBusyThrowing(
+                message: message,
+                canCancel: canCancel,
+                showsOverlayAfterDelay: showsOverlayAfterDelay,
+                cancellationMessage: cancellationMessage,
+                operationID: operationID,
+                work
+            )
         } catch {
             return
         }
     }
 
-    private func runBusyThrowing(message: String = "Working...", canCancel: Bool = false, _ work: @escaping () async throws -> Void) async throws {
+    private func runBusyThrowing(
+        message: String = "Working...",
+        canCancel: Bool = false,
+        showsOverlayAfterDelay: Bool = false,
+        cancellationMessage: String = "Operation cancelled.",
+        operationID: UUID,
+        _ work: @escaping () async throws -> Void
+    ) async throws {
+        guard currentBusyOperationID == operationID else {
+            throw CancellationError()
+        }
+
         errorMessage = nil
         transferProgress = nil
         transferProgressText = ""
@@ -730,29 +795,208 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         canCancelBusyOperation = canCancel
         isCancellingBusyOperation = false
-        showBusyOverlay(afterDelay: canCancel)
+        showBusyOverlay(afterDelay: showsOverlayAfterDelay || canCancel)
         defer {
-            busyOverlayDelayTask?.cancel()
-            busyOverlayDelayTask = nil
-            isBusy = false
-            isBusyOverlayVisible = false
-            canCancelBusyOperation = false
-            isCancellingBusyOperation = false
-            busyMessage = "Working..."
-            transferProgress = nil
-            transferProgressText = ""
-            currentBusyTask = nil
-            resetTransferTiming()
+            if currentBusyOperationID == operationID {
+                busyOverlayDelayTask?.cancel()
+                busyOverlayDelayTask = nil
+                isBusy = false
+                isBusyOverlayVisible = false
+                canCancelBusyOperation = false
+                isCancellingBusyOperation = false
+                busyMessage = "Working..."
+                transferProgress = nil
+                transferProgressText = ""
+                currentBusyOperationID = nil
+                currentBusyTask = nil
+                resetTransferTiming()
+            }
         }
         do {
             try await work()
         } catch {
-            if error is CancellationError {
-                errorMessage = "Transfer cancelled."
-            } else {
-                errorMessage = error.localizedDescription
+            if currentBusyOperationID == operationID {
+                if error is CancellationError {
+                    errorMessage = cancellationMessage
+                } else {
+                    errorMessage = userFacingErrorDescription(error)
+                }
             }
             throw error
+        }
+    }
+
+    private func userFacingErrorDescription(_ error: any Error) -> String {
+        if let sftpErrorDescription = sftpErrorDescription(error) {
+            return sftpErrorDescription
+        }
+
+        if error is AuthenticationFailed {
+            return authenticationErrorDescription()
+        }
+
+        if let sshError = error as? SSHClientError {
+            return sshClientErrorDescription(sshError)
+        }
+
+        if let citadelError = error as? CitadelError {
+            return citadelErrorDescription(citadelError)
+        }
+
+        if let connectionError = error as? NIOConnectionError {
+            return connectionErrorDescription(connectionError)
+        }
+
+        if let channelError = error as? ChannelError {
+            return channelErrorDescription(channelError)
+        }
+
+        if let ioError = error as? IOError {
+            return ioErrorDescription(ioError, host: host, port: port)
+        }
+
+        return error.localizedDescription
+    }
+
+    private func sftpErrorDescription(_ error: any Error) -> String? {
+        if let status = error as? SFTPMessage.Status {
+            return sftpStatusDescription(status)
+        }
+
+        guard let sftpError = error as? SFTPError else {
+            return nil
+        }
+
+        switch sftpError {
+        case .unknownMessage, .invalidPayload, .invalidResponse:
+            return "The SFTP server returned a response this app could not read. Try the operation again."
+        case .noResponseTarget, .missingResponse:
+            return "The SFTP server did not respond to the request. Try again or reconnect."
+        case .connectionClosed:
+            return "The SFTP connection was closed. Reconnect and try again."
+        case .fileHandleInvalid:
+            return "The remote file handle expired. Refresh the folder and try again."
+        case .errorStatus(let status):
+            return sftpStatusDescription(status)
+        case .unsupportedVersion:
+            return "The server uses an SFTP version this app does not support."
+        }
+    }
+
+    private func sftpStatusDescription(_ status: SFTPMessage.Status) -> String {
+        let contextPath = remotePath.normalizedRemotePath()
+        let serverMessage = serverMessageSuffix(status.message)
+
+        switch status.errorCode {
+        case .ok:
+            return "The SFTP server reported success, but the operation did not complete.\(serverMessage)"
+        case .eof:
+            return "The remote path \(contextPath) could not be opened. Check that the folder exists and that you have access.\(serverMessage)"
+        case .noSuchFile:
+            return "The remote path \(contextPath) does not exist.\(serverMessage)"
+        case .permissionDenied:
+            return "Permission denied for \(contextPath). Check the account permissions on the server.\(serverMessage)"
+        case .failure:
+            return "The SFTP server rejected the operation for \(contextPath). Check that the path exists and is accessible.\(serverMessage)"
+        case .badMessage:
+            return "The SFTP server returned an invalid response. Try again or reconnect.\(serverMessage)"
+        case .noConnection:
+            return "The SFTP connection is not active. Reconnect and try again.\(serverMessage)"
+        case .connectionLost:
+            return "The SFTP connection was lost. Reconnect and try again.\(serverMessage)"
+        case .unsupportedOperation:
+            return "The SFTP server does not support that operation.\(serverMessage)"
+        case .unknown(let code):
+            return "The SFTP server returned an unknown status code (\(code)).\(serverMessage)"
+        }
+    }
+
+    private func serverMessageSuffix(_ message: String) -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ""
+        }
+        return " Server: \(trimmed)"
+    }
+
+    private func authenticationErrorDescription() -> String {
+        "Could not sign in. Check the username and password for \(host.trimmingCharacters(in: .whitespacesAndNewlines))."
+    }
+
+    private func sshClientErrorDescription(_ error: SSHClientError) -> String {
+        switch error {
+        case .unsupportedPasswordAuthentication:
+            return "This server does not allow password authentication. Enable password login on the server or use a different server."
+        case .unsupportedPrivateKeyAuthentication, .unsupportedHostBasedAuthentication:
+            return "This server requires an authentication method this app does not support yet."
+        case .channelCreationFailed:
+            return "Connected to the server, but could not open an SFTP channel."
+        case .allAuthenticationOptionsFailed:
+            return authenticationErrorDescription()
+        }
+    }
+
+    private func citadelErrorDescription(_ error: CitadelError) -> String {
+        switch error {
+        case .unauthorized:
+            return authenticationErrorDescription()
+        case .channelCreationFailed, .channelFailure:
+            return "Connected to the server, but the SFTP channel failed. Check that SFTP is enabled for this account."
+        case .unsupported:
+            return "The server requested an SSH/SFTP feature this app does not support."
+        case .cryptographicError, .invalidMac, .invalidSignature, .signingError:
+            return "The SSH connection failed during encryption setup. Reconnect and verify the server is trusted."
+        default:
+            return "The SSH connection failed. \(error.localizedDescription)"
+        }
+    }
+
+    private func connectionErrorDescription(_ error: NIOConnectionError) -> String {
+        if error.dnsAError != nil || error.dnsAAAAError != nil {
+            return "Could not resolve \(error.host). Check the host name or DNS/VPN connection."
+        }
+
+        let ioErrors = error.connectionErrors.compactMap { $0.error as? IOError }
+        if let ioError = ioErrors.first {
+            return ioErrorDescription(ioError, host: error.host, port: error.port)
+        }
+
+        return "Could not connect to \(error.host):\(error.port). Check the host, port, network, VPN, and firewall."
+    }
+
+    private func channelErrorDescription(_ error: ChannelError) -> String {
+        let target = "\(host.trimmingCharacters(in: .whitespacesAndNewlines)):\(port)"
+
+        switch error {
+        case .connectPending:
+            return "A connection to \(target) is already in progress."
+        case .connectTimeout:
+            return "Connection to \(target) timed out. Check the host, port, network, VPN, firewall, or server status."
+        case .ioOnClosedChannel, .alreadyClosed, .inputClosed, .outputClosed, .eof:
+            return "The connection to \(target) closed before SFTP could start. Check the host, port, network, VPN, and server status."
+        case .writeHostUnreachable:
+            return "Host \(host.trimmingCharacters(in: .whitespacesAndNewlines)) is unreachable. Check the host name, network, or VPN connection."
+        case .operationUnsupported, .inappropriateOperationForState:
+            return "The network connection could not be opened. Check the host, port, and server configuration."
+        default:
+            return "Could not connect to \(target). Check the host, port, network, VPN, and server status."
+        }
+    }
+
+    private func ioErrorDescription(_ error: IOError, host: String, port: Int) -> String {
+        switch error.errnoCode {
+        case ECONNREFUSED:
+            return "Connection refused by \(host):\(port). The server is reachable, but SSH/SFTP is not accepting connections on that port."
+        case ETIMEDOUT:
+            return "Connection to \(host):\(port) timed out. Check the network, VPN, firewall, or server status."
+        case EHOSTUNREACH:
+            return "Host \(host) is unreachable. Check the network, VPN, or server address."
+        case ENETUNREACH:
+            return "Network is unreachable. Check your network or VPN connection."
+        case ECONNRESET:
+            return "Connection to \(host):\(port) was reset by the server."
+        default:
+            return "Could not connect to \(host):\(port). \(error.localizedDescription)"
         }
     }
 
@@ -766,8 +1010,8 @@ final class AppViewModel: ObservableObject {
         }
 
         busyOverlayDelayTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Self.transferOverlayDelay))
-            guard let self, !Task.isCancelled, self.isBusy, self.canCancelBusyOperation else {
+            try? await Task.sleep(for: .seconds(Self.busyOverlayDelay))
+            guard let self, !Task.isCancelled, self.isBusy else {
                 return
             }
 
@@ -927,6 +1171,7 @@ final class AppViewModel: ObservableObject {
     private static let minimumTransferUIUpdateInterval: TimeInterval = 0.25
     private static let minimumTransferByteUpdate: Int64 = 1_000_000
     private static let minimumTransferFractionUpdate = 0.01
+    private static let busyOverlayDelay = 0.75
     private static let transferOverlayDelay = 1.5
 
     private static func isUploadableItem(_ url: URL) -> Bool {

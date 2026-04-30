@@ -107,9 +107,6 @@ struct ContentView: View {
         .onChange(of: viewModel.remotePath) { _, remotePath in
             storedRemotePath = remotePath
         }
-        .onChange(of: viewModel.password) { _, password in
-            passwordStore().savePassword(password)
-        }
     }
 
     private var busyOverlay: some View {
@@ -135,7 +132,7 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(activeTransferJob == nil ? "Please wait until the current operation finishes." : "Transfers run one at a time. Queued transfers start automatically.")
+                Text(overlayDetailText(activeTransferJob: activeTransferJob))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if activeTransferJob != nil {
@@ -162,6 +159,16 @@ struct ContentView: View {
             .shadow(radius: 12, y: 4)
         }
         .ignoresSafeArea()
+    }
+
+    private func overlayDetailText(activeTransferJob: TransferJob?) -> String {
+        if activeTransferJob != nil {
+            return "Transfers run one at a time. Queued transfers start automatically."
+        }
+        if viewModel.canCancelBusyOperation {
+            return "You can cancel this operation if it is taking too long."
+        }
+        return "Please wait until the current operation finishes."
     }
 
     private var connectionMenu: some View {
@@ -198,8 +205,10 @@ struct ContentView: View {
                 systemImage: viewModel.isConnected ? "bolt.slash" : "bolt"
             )
         } primaryAction: {
-            if viewModel.canConnect {
-                viewModel.toggleConnection()
+            if viewModel.isConnected {
+                viewModel.disconnect()
+            } else if viewModel.canConnect {
+                connectCurrentConnection()
             }
         }
     }
@@ -237,7 +246,7 @@ struct ContentView: View {
                     }
                     .onSubmit {
                         if !viewModel.isConnected, viewModel.canConnect {
-                            viewModel.connect()
+                            connectCurrentConnection()
                         }
                     }
 
@@ -268,7 +277,7 @@ struct ContentView: View {
                     TextField("Remote Path", text: $viewModel.remotePath)
                         .textFieldStyle(.plain)
                         .onSubmit {
-                            viewModel.submitRemotePath()
+                            submitRemotePath()
                         }
                 }
                 .padding(.horizontal, 9)
@@ -382,7 +391,6 @@ struct ContentView: View {
         viewModel.username = storedUsername
         viewModel.remotePath = storedRemotePath == "." ? "/" : storedRemotePath
         selectedProfileID = matchingProfileID()
-        viewModel.password = loadCurrentPassword()
     }
 
     private func apply(_ profile: ConnectionProfile) {
@@ -391,14 +399,13 @@ struct ContentView: View {
         viewModel.username = profile.username
         viewModel.remotePath = profile.remotePath == "." ? "/" : profile.remotePath
         selectedProfileID = profile.id
-        viewModel.password = loadPassword(for: profile)
+        viewModel.password = ""
+        loadSavedPasswordForCurrentConnectionIfNeeded()
     }
 
     private func connect(using profile: ConnectionProfile) {
         apply(profile)
-        if viewModel.canConnect {
-            viewModel.connect()
-        }
+        connectCurrentConnection()
     }
 
     private func saveCurrentProfile() {
@@ -470,6 +477,38 @@ struct ContentView: View {
         return name.isEmpty ? defaultName : name
     }
 
+    private func submitRemotePath() {
+        if !viewModel.isConnected, viewModel.canConnect {
+            loadSavedPasswordForCurrentConnectionIfNeeded()
+        }
+        viewModel.submitRemotePath()
+    }
+
+    private func connectCurrentConnection() {
+        loadSavedPasswordForCurrentConnectionIfNeeded()
+        saveCurrentPasswordIfNeeded()
+        viewModel.connect()
+    }
+
+    private func loadSavedPasswordForCurrentConnectionIfNeeded() {
+        guard viewModel.password.isEmpty else {
+            return
+        }
+
+        let savedPassword = loadCurrentPassword()
+        if !savedPassword.isEmpty {
+            viewModel.password = savedPassword
+        }
+    }
+
+    private func saveCurrentPasswordIfNeeded() {
+        guard !viewModel.password.isEmpty else {
+            return
+        }
+
+        passwordStore().savePassword(viewModel.password)
+    }
+
     private func passwordStore() -> KeychainPasswordStore {
         KeychainPasswordStore(account: passwordAccount(
             host: viewModel.host,
@@ -488,11 +527,6 @@ struct ContentView: View {
 
     private func loadCurrentPassword() -> String {
         let scopedPassword = passwordStore().loadPassword()
-        return scopedPassword.isEmpty ? KeychainPasswordStore().loadPassword() : scopedPassword
-    }
-
-    private func loadPassword(for profile: ConnectionProfile) -> String {
-        let scopedPassword = passwordStore(for: profile).loadPassword()
         return scopedPassword.isEmpty ? KeychainPasswordStore().loadPassword() : scopedPassword
     }
 

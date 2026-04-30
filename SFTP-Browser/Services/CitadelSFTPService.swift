@@ -11,6 +11,7 @@ import NIO
 
 struct CitadelSFTPService: SFTPService {
     private let chunkSize: UInt32 = 256 * 1024
+    private let connectTimeout: TimeAmount = .seconds(8)
     private let knownHostStore: KnownHostStore
 
     init(knownHostStore: KnownHostStore) {
@@ -383,7 +384,7 @@ struct CitadelSFTPService: SFTPService {
         config: SFTPConnectionConfig,
         _ operation: @escaping @Sendable (SFTPClient) async throws -> Result
     ) async throws -> Result {
-        let settings = SSHClientSettings(
+        var settings = SSHClientSettings(
             host: config.host,
             port: config.port,
             authenticationMethod: {
@@ -391,6 +392,7 @@ struct CitadelSFTPService: SFTPService {
             },
             hostKeyValidator: knownHostStore.validator(host: config.host, port: config.port)
         )
+        settings.connectTimeout = connectTimeout
 
         let client = try await SSHClient.connect(to: settings)
         do {
