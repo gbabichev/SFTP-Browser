@@ -341,6 +341,9 @@ struct ContentView: View {
                 onOpen: { item in
                     viewModel.open(item)
                 },
+                onQuickLook: {
+                    viewModel.quickLookSelection()
+                },
                 onRename: { item in
                     viewModel.rename(item)
                 },

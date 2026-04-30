@@ -13,6 +13,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     @Binding var selectedItemIDs: Set<RemoteItem.ID>
     let actionsEnabled: Bool
     let onOpen: (RemoteItem) -> Void
+    let onQuickLook: () -> Void
     let onRename: (RemoteItem) -> Void
     let onDelete: (RemoteItem) -> Void
     let onCreateFolder: () -> Void
@@ -81,6 +82,9 @@ struct RemoteFileTableView: NSViewRepresentable {
             tableView.backgroundColor = .textBackgroundColor
             tableView.doubleAction = #selector(handleDoubleClick)
             tableView.target = self
+            tableView.onQuickLook = { [weak self] in
+                self?.parent.onQuickLook()
+            }
             tableView.registerForDraggedTypes([.fileURL])
             tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
 
@@ -504,6 +508,7 @@ struct RemoteFileTableView: NSViewRepresentable {
 @MainActor
 private final class ContextMenuTableView: NSTableView {
     private(set) var contextClickedRow = -1
+    var onQuickLook: (() -> Void)?
 
     private func applyContextSelection(for event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -527,5 +532,15 @@ private final class ContextMenuTableView: NSTableView {
     override func menu(for event: NSEvent) -> NSMenu? {
         applyContextSelection(for: event)
         return super.menu(for: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+        if modifiers.isEmpty, event.charactersIgnoringModifiers == " " {
+            onQuickLook?()
+            return
+        }
+
+        super.keyDown(with: event)
     }
 }

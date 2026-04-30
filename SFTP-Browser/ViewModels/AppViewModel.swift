@@ -12,6 +12,7 @@ import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
+import Quartz
 
 @MainActor
 final class AppViewModel: ObservableObject {
@@ -49,6 +50,7 @@ final class AppViewModel: ObservableObject {
     private var transferStartedAt: Date?
     private var lastTransferUIUpdateAt: Date?
     private var lastDisplayedCompletedBytes: Int64 = 0
+    private let quickLookPreviewController = QuickLookPreviewController()
 
     init() {
         let knownHostStore = KnownHostStore()
@@ -133,6 +135,49 @@ final class AppViewModel: ObservableObject {
             disconnect()
         } else {
             connect()
+        }
+    }
+
+    func quickLookSelection() {
+        let selection = selectedItems
+        guard selection.count == 1 else {
+            errorMessage = selection.isEmpty
+                ? "Select a file to preview."
+                : "Select one file to preview."
+            return
+        }
+
+        let item = selection[0]
+        guard !item.isDirectory else {
+            errorMessage = "Quick Look preview is available for files only."
+            return
+        }
+        guard !item.isSymlink else {
+            errorMessage = "Quick Look preview is not available for symlinks. Select the linked target instead."
+            return
+        }
+
+        let config = connectionConfig()
+        let remoteFilePath = remotePath.appendingRemotePathComponent(item.name)
+        let totalBytes = item.sizeBytes > 0 ? item.sizeBytes : nil
+
+        startBusyOperation(
+            message: "Preparing Preview...",
+            canCancel: true,
+            showsOverlayAfterDelay: true,
+            cancellationMessage: "Preview cancelled."
+        ) {
+            let localURL = try Self.makeQuickLookPreviewURL(for: item.name)
+            let progressHandler = self.transferProgressHandler()
+            await progressHandler(TransferProgress(completedBytes: 0, totalBytes: totalBytes))
+            try await self.service.downloadFile(
+                config: config,
+                remoteFilePath: remoteFilePath,
+                localURL: localURL,
+                progress: progressHandler
+            )
+            try Task.checkCancellation()
+            self.quickLookPreviewController.preview(localURL)
         }
     }
 
@@ -1242,12 +1287,46 @@ final class AppViewModel: ObservableObject {
     private static let busyOverlayDelay = 0.75
     private static let transferOverlayDelay = 1.5
 
+    private static var quickLookCacheDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("SFTP-Browser-QuickLook", isDirectory: true)
+    }
+
+    private static func makeQuickLookPreviewURL(for fileName: String) throws -> URL {
+        let directory = quickLookCacheDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(fileName)
+    }
+
     private static func isUploadableItem(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
         if values?.isSymbolicLink == true {
             return false
         }
         return values?.isRegularFile == true || values?.isDirectory == true
+    }
+}
+
+@MainActor
+private final class QuickLookPreviewController: NSObject, QLPreviewPanelDataSource {
+    private var previewURL: URL?
+
+    func preview(_ url: URL) {
+        previewURL = url
+        guard let panel = QLPreviewPanel.shared() else {
+            return
+        }
+
+        panel.dataSource = self
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewURL == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        previewURL.map { $0 as NSURL }
     }
 }
 
