@@ -243,31 +243,41 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let existingRemoteNames = Set(items.map(\.name))
-        let conflictingNames = uploadURLs
-            .map(\.lastPathComponent)
-            .filter { existingRemoteNames.contains($0) }
-        guard confirmReplaceIfNeeded(conflictingNames, locationDescription: "on the remote server") else {
-            return
-        }
-
         let config = connectionConfig()
         let targetRemotePath = remotePath
         let title = uploadURLs.count == 1 ? "Uploading \(uploadURLs[0].lastPathComponent)" : "Uploading \(uploadURLs.count) items"
-        enqueueTransfer(kind: .upload, title: title, detail: targetRemotePath) { progress in
-            try await self.service.uploadItems(
+
+        startBusyOperation(
+            message: "Checking Upload...",
+            canCancel: true,
+            showsOverlayAfterDelay: true,
+            cancellationMessage: "Upload cancelled."
+        ) {
+            let conflicts = try await self.service.uploadConflicts(
                 config: config,
                 localURLs: uploadURLs,
-                remoteDirectoryPath: targetRemotePath,
-                progress: progress
+                remoteDirectoryPath: targetRemotePath
             )
-        } onSuccess: {
-            if self.isConnected {
-                try await self.loadCurrentDirectory()
+            try Task.checkCancellation()
+            guard self.confirmReplaceIfNeeded(conflicts, locationDescription: "on the remote server") else {
+                return
             }
-        } onCancel: {
-            if self.isConnected {
-                try? await self.loadCurrentDirectory()
+
+            self.enqueueTransfer(kind: .upload, title: title, detail: targetRemotePath) { progress in
+                try await self.service.uploadItems(
+                    config: config,
+                    localURLs: uploadURLs,
+                    remoteDirectoryPath: targetRemotePath,
+                    progress: progress
+                )
+            } onSuccess: {
+                if self.isConnected {
+                    try await self.loadCurrentDirectory()
+                }
+            } onCancel: {
+                if self.isConnected {
+                    try? await self.loadCurrentDirectory()
+                }
             }
         }
     }
@@ -487,24 +497,36 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let conflictingNames = items
-            .map(\.name)
-            .filter { FileManager.default.fileExists(atPath: folderURL.appendingPathComponent($0).path) }
-        guard confirmReplaceIfNeeded(conflictingNames, locationDescription: "in the selected local folder") else {
-            return
-        }
-
         let config = connectionConfig()
         let sourceRemotePath = remotePath
         let title = items.count == 1 ? "Downloading \(items[0].name)" : "Downloading \(items.count) items"
-        enqueueTransfer(kind: .download, title: title, detail: folderURL.path) { progress in
-            try await self.service.downloadItems(
+
+        startBusyOperation(
+            message: "Checking Download...",
+            canCancel: true,
+            showsOverlayAfterDelay: true,
+            cancellationMessage: "Download cancelled."
+        ) {
+            let conflicts = try await self.service.downloadConflicts(
                 config: config,
                 remoteItems: items,
                 remoteDirectoryPath: sourceRemotePath,
-                localDirectoryURL: folderURL,
-                progress: progress
+                localDirectoryURL: folderURL
             )
+            try Task.checkCancellation()
+            guard self.confirmReplaceIfNeeded(conflicts, locationDescription: "in the selected local folder") else {
+                return
+            }
+
+            self.enqueueTransfer(kind: .download, title: title, detail: folderURL.path) { progress in
+                try await self.service.downloadItems(
+                    config: config,
+                    remoteItems: items,
+                    remoteDirectoryPath: sourceRemotePath,
+                    localDirectoryURL: folderURL,
+                    progress: progress
+                )
+            }
         }
     }
 

@@ -62,8 +62,10 @@ typealias TransferProgressHandler = @Sendable (TransferProgress) async -> Void
 
 protocol SFTPService: Sendable {
     func listDirectory(config: SFTPConnectionConfig, path: String) async throws -> [RemoteItem]
+    func uploadConflicts(config: SFTPConnectionConfig, localURLs: [URL], remoteDirectoryPath: String) async throws -> [String]
     func uploadItems(config: SFTPConnectionConfig, localURLs: [URL], remoteDirectoryPath: String, progress: TransferProgressHandler?) async throws
     func uploadFile(config: SFTPConnectionConfig, localURL: URL, remotePath: String, progress: TransferProgressHandler?) async throws
+    func downloadConflicts(config: SFTPConnectionConfig, remoteItems: [RemoteItem], remoteDirectoryPath: String, localDirectoryURL: URL) async throws -> [String]
     func downloadItems(config: SFTPConnectionConfig, remoteItems: [RemoteItem], remoteDirectoryPath: String, localDirectoryURL: URL, progress: TransferProgressHandler?) async throws
     func downloadFile(config: SFTPConnectionConfig, remoteFilePath: String, localURL: URL, progress: TransferProgressHandler?) async throws
     func createDirectory(config: SFTPConnectionConfig, remotePath: String) async throws

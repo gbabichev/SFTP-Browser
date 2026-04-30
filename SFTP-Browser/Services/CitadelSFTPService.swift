@@ -64,6 +64,28 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
+    func uploadConflicts(
+        config: SFTPConnectionConfig,
+        localURLs: [URL],
+        remoteDirectoryPath: String
+    ) async throws -> [String] {
+        try await withSFTP(config: config) { sftp in
+            var conflicts: [String] = []
+            for localURL in localURLs {
+                try Task.checkCancellation()
+                let relativePath = localURL.lastPathComponent
+                try await collectUploadConflicts(
+                    sftp: sftp,
+                    localURL: localURL,
+                    remotePath: appendingRemotePathComponent(remoteDirectoryPath, localURL.lastPathComponent),
+                    relativePath: relativePath,
+                    conflicts: &conflicts
+                )
+            }
+            return Self.sortedUnique(conflicts)
+        }
+    }
+
     func uploadItems(
         config: SFTPConnectionConfig,
         localURLs: [URL],
@@ -109,6 +131,29 @@ struct CitadelSFTPService: SFTPService {
                 totalBytes: totalBytes,
                 progress: progress
             )
+        }
+    }
+
+    func downloadConflicts(
+        config: SFTPConnectionConfig,
+        remoteItems: [RemoteItem],
+        remoteDirectoryPath: String,
+        localDirectoryURL: URL
+    ) async throws -> [String] {
+        try await withSFTP(config: config) { sftp in
+            var conflicts: [String] = []
+            for item in remoteItems {
+                try Task.checkCancellation()
+                try await collectDownloadConflicts(
+                    sftp: sftp,
+                    item: item,
+                    remotePath: appendingRemotePathComponent(remoteDirectoryPath, item.name),
+                    localURL: localDirectoryURL.appendingPathComponent(item.name),
+                    relativePath: item.name,
+                    conflicts: &conflicts
+                )
+            }
+            return Self.sortedUnique(conflicts)
         }
     }
 
@@ -168,6 +213,84 @@ struct CitadelSFTPService: SFTPService {
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws {
         try await withSFTP(config: config) { sftp in
             try await deleteRemoteItem(sftp: sftp, remotePath: remotePath, isDirectory: isDirectory)
+        }
+    }
+
+    private func collectUploadConflicts(
+        sftp: SFTPClient,
+        localURL: URL,
+        remotePath: String,
+        relativePath: String,
+        conflicts: inout [String]
+    ) async throws {
+        try Task.checkCancellation()
+        if Self.isSymlink(localURL) {
+            return
+        }
+
+        let existing = try await remoteItemIfExists(sftp: sftp, remotePath: remotePath)
+        if existing != nil {
+            conflicts.append(relativePath)
+        }
+
+        guard Self.isDirectory(localURL) else {
+            return
+        }
+        guard existing == nil || existing?.isDirectory == true else {
+            return
+        }
+
+        let childURLs = try FileManager.default.contentsOfDirectory(
+            at: localURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )
+        for childURL in childURLs {
+            try await collectUploadConflicts(
+                sftp: sftp,
+                localURL: childURL,
+                remotePath: appendingRemotePathComponent(remotePath, childURL.lastPathComponent),
+                relativePath: relativePath.appendingRelativePathComponent(childURL.lastPathComponent),
+                conflicts: &conflicts
+            )
+        }
+    }
+
+    private func collectDownloadConflicts(
+        sftp: SFTPClient,
+        item: RemoteItem,
+        remotePath: String,
+        localURL: URL,
+        relativePath: String,
+        conflicts: inout [String]
+    ) async throws {
+        try Task.checkCancellation()
+        if item.isSymlink {
+            return
+        }
+
+        let localExists = FileManager.default.fileExists(atPath: localURL.path)
+        if localExists {
+            conflicts.append(relativePath)
+        }
+
+        guard item.isDirectory else {
+            return
+        }
+        guard !localExists || Self.isDirectory(localURL) else {
+            return
+        }
+
+        let children = try await listRemoteItemsForPreflight(sftp: sftp, path: remotePath)
+        for child in children {
+            try await collectDownloadConflicts(
+                sftp: sftp,
+                item: child,
+                remotePath: appendingRemotePathComponent(remotePath, child.name),
+                localURL: localURL.appendingPathComponent(child.name),
+                relativePath: relativePath.appendingRelativePathComponent(child.name),
+                conflicts: &conflicts
+            )
         }
     }
 
@@ -404,6 +527,26 @@ struct CitadelSFTPService: SFTPService {
             .map(Self.remoteItem)
     }
 
+    private func listRemoteItemsForPreflight(sftp: SFTPClient, path: String) async throws -> [RemoteItem] {
+        do {
+            return try await listRemoteItems(sftp: sftp, path: path)
+        } catch {
+            throw TransferPreflightError(path: path, underlying: error)
+        }
+    }
+
+    private func remoteItemIfExists(sftp: SFTPClient, remotePath: String) async throws -> RemoteItem? {
+        do {
+            let items = try await listRemoteItems(sftp: sftp, path: remoteParentPath(of: remotePath))
+            return items.first { $0.name == remoteLastPathComponent(of: remotePath) }
+        } catch {
+            if Self.isMissingPathError(error) {
+                return nil
+            }
+            throw TransferPreflightError(path: remoteParentPath(of: remotePath), underlying: error)
+        }
+    }
+
     private func ensureRemoteDirectory(sftp: SFTPClient, remotePath: String) async throws {
         do {
             try await sftp.createDirectory(atPath: remotePath)
@@ -497,6 +640,28 @@ struct CitadelSFTPService: SFTPService {
         return base.trimmingTrailingSlash() + "/" + component
     }
 
+    private func remoteParentPath(of path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines).trimmingTrailingSlash()
+        guard !trimmed.isEmpty, trimmed != "/" else {
+            return "/"
+        }
+        guard let slashIndex = trimmed.lastIndex(of: "/") else {
+            return "."
+        }
+        if slashIndex == trimmed.startIndex {
+            return "/"
+        }
+        return String(trimmed[..<slashIndex])
+    }
+
+    private func remoteLastPathComponent(of path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines).trimmingTrailingSlash()
+        guard let slashIndex = trimmed.lastIndex(of: "/") else {
+            return trimmed
+        }
+        return String(trimmed[trimmed.index(after: slashIndex)...])
+    }
+
     private func localFileSize(at url: URL) -> Int64? {
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
             return nil
@@ -556,9 +721,41 @@ struct CitadelSFTPService: SFTPService {
     private static func isSymlink(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
     }
+
+    private static func isMissingPathError(_ error: any Error) -> Bool {
+        if let status = error as? SFTPMessage.Status {
+            return status.errorCode == .noSuchFile
+        }
+        if case SFTPError.errorStatus(let status) = error {
+            return status.errorCode == .noSuchFile
+        }
+        return false
+    }
+
+    private static func sortedUnique(_ paths: [String]) -> [String] {
+        Array(Set(paths)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+}
+
+private struct TransferPreflightError: LocalizedError {
+    let path: String
+    let underlying: any Error
+
+    var errorDescription: String? {
+        "Could not check transfer conflicts for \(path). \(underlying.localizedDescription)"
+    }
 }
 
 private extension String {
+    func appendingRelativePathComponent(_ component: String) -> String {
+        if isEmpty {
+            return component
+        }
+        return trimmingTrailingSlash() + "/" + component
+    }
+
     func trimmingTrailingSlash() -> String {
         var value = self
         while value.count > 1, value.hasSuffix("/") {
