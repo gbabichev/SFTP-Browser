@@ -35,6 +35,7 @@ struct ContentView: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 520)
+        .focusedSceneValue(\.sftpBrowserCommandContext, commandContext)
         .overlay {
             if viewModel.isBusyOverlayVisible || viewModel.isTransferOverlayVisible {
                 busyOverlay
@@ -107,6 +108,32 @@ struct ContentView: View {
         .onChange(of: viewModel.remotePath) { _, remotePath in
             storedRemotePath = remotePath
         }
+    }
+
+    private var commandContext: SFTPBrowserCommandContext {
+        let canUseRemoteActions = viewModel.isConnected && !viewModel.isBusy
+        return SFTPBrowserCommandContext(
+            canRefresh: canUseRemoteActions,
+            canCreateFolder: canUseRemoteActions,
+            canUpload: canUseRemoteActions,
+            canDownload: canUseRemoteActions && viewModel.canDownloadSelection,
+            canDelete: canUseRemoteActions && viewModel.canDeleteSelection,
+            refresh: {
+                viewModel.refresh()
+            },
+            newFolder: {
+                viewModel.createFolder()
+            },
+            upload: {
+                viewModel.upload()
+            },
+            download: {
+                viewModel.download()
+            },
+            deleteSelection: {
+                viewModel.deleteSelection()
+            }
+        )
     }
 
     private var busyOverlay: some View {
@@ -349,6 +376,9 @@ struct ContentView: View {
                 },
                 onDelete: { item in
                     viewModel.delete(item)
+                },
+                onDeleteSelection: {
+                    viewModel.deleteSelection()
                 },
                 onCreateFolder: {
                     viewModel.createFolder()

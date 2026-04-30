@@ -33,6 +33,7 @@ struct SFTP_BrowserApp: App {
 private struct SFTPBrowserCommands: Commands {
     @ObservedObject var aboutController: AboutOverlayController
     @ObservedObject var updateCenter: AppUpdateCenter
+    @FocusedValue(\.sftpBrowserCommandContext) private var browserCommandContext
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -49,6 +50,75 @@ private struct SFTPBrowserCommands: Commands {
             }
             .disabled(updateCenter.isChecking)
         }
+
+        CommandGroup(replacing: .newItem) {
+            Button {
+                browserCommandContext?.newFolder()
+            } label: {
+                Label("New Folder", systemImage: "folder.badge.plus")
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(browserCommandContext?.canCreateFolder != true)
+        }
+
+        CommandMenu("Remote") {
+            Button {
+                browserCommandContext?.refresh()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(browserCommandContext?.canRefresh != true)
+
+            Button {
+                browserCommandContext?.upload()
+            } label: {
+                Label("Upload", systemImage: "square.and.arrow.up")
+            }
+            .keyboardShortcut("u", modifiers: .command)
+            .disabled(browserCommandContext?.canUpload != true)
+
+            Button {
+                browserCommandContext?.download()
+            } label: {
+                Label("Download", systemImage: "square.and.arrow.down")
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(browserCommandContext?.canDownload != true)
+
+            Divider()
+
+            Button(role: .destructive) {
+                browserCommandContext?.deleteSelection()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(browserCommandContext?.canDelete != true)
+        }
+    }
+}
+
+struct SFTPBrowserCommandContext {
+    let canRefresh: Bool
+    let canCreateFolder: Bool
+    let canUpload: Bool
+    let canDownload: Bool
+    let canDelete: Bool
+    let refresh: () -> Void
+    let newFolder: () -> Void
+    let upload: () -> Void
+    let download: () -> Void
+    let deleteSelection: () -> Void
+}
+
+private struct SFTPBrowserCommandContextKey: FocusedValueKey {
+    typealias Value = SFTPBrowserCommandContext
+}
+
+extension FocusedValues {
+    var sftpBrowserCommandContext: SFTPBrowserCommandContext? {
+        get { self[SFTPBrowserCommandContextKey.self] }
+        set { self[SFTPBrowserCommandContextKey.self] = newValue }
     }
 }
 

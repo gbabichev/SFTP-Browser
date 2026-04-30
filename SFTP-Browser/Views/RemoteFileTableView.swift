@@ -16,6 +16,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     let onQuickLook: () -> Void
     let onRename: (RemoteItem) -> Void
     let onDelete: (RemoteItem) -> Void
+    let onDeleteSelection: () -> Void
     let onCreateFolder: () -> Void
     let onUpload: ([URL]) -> Void
     let makeFilePromiseWriter: (RemoteItem) -> RemoteFilePromiseWriter?
@@ -84,6 +85,9 @@ struct RemoteFileTableView: NSViewRepresentable {
             tableView.target = self
             tableView.onQuickLook = { [weak self] in
                 self?.parent.onQuickLook()
+            }
+            tableView.onDeleteSelection = { [weak self] in
+                self?.parent.onDeleteSelection()
             }
             tableView.registerForDraggedTypes([.fileURL])
             tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
@@ -509,6 +513,7 @@ struct RemoteFileTableView: NSViewRepresentable {
 private final class ContextMenuTableView: NSTableView {
     private(set) var contextClickedRow = -1
     var onQuickLook: (() -> Void)?
+    var onDeleteSelection: (() -> Void)?
 
     private func applyContextSelection(for event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -538,6 +543,10 @@ private final class ContextMenuTableView: NSTableView {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control])
         if modifiers.isEmpty, event.charactersIgnoringModifiers == " " {
             onQuickLook?()
+            return
+        }
+        if modifiers.isEmpty, event.keyCode == 51 || event.keyCode == 117 {
+            onDeleteSelection?()
             return
         }
 
