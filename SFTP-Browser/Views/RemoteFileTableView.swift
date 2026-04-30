@@ -177,8 +177,10 @@ struct RemoteFileTableView: NSViewRepresentable {
             }
 
             return items.sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory {
-                    return lhs.isDirectory && !rhs.isDirectory
+                let lhsRank = sortRank(lhs)
+                let rhsRank = sortRank(rhs)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
                 }
 
                 let comparison = compare(lhs, rhs, key: key)
@@ -393,11 +395,11 @@ struct RemoteFileTableView: NSViewRepresentable {
             if columnID == Self.nameColumnID {
                 let imageView = NSImageView()
                 imageView.image = NSImage(
-                    systemSymbolName: item.isDirectory ? "folder" : "doc",
-                    accessibilityDescription: item.isDirectory ? "Folder" : "File"
+                    systemSymbolName: symbolName(for: item),
+                    accessibilityDescription: accessibilityDescription(for: item)
                 )
                 imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-                imageView.contentTintColor = item.isDirectory ? .controlAccentColor : .secondaryLabelColor
+                imageView.contentTintColor = tintColor(for: item)
                 imageView.translatesAutoresizingMaskIntoConstraints = false
 
                 let textField = NSTextField(labelWithString: item.name)
@@ -426,7 +428,7 @@ struct RemoteFileTableView: NSViewRepresentable {
             let alignment: NSTextAlignment
             switch columnID {
             case Self.sizeColumnID:
-                text = item.isDirectory ? "" : item.sizeDescription
+                text = item.isDirectory || item.isSymlink ? "" : item.sizeDescription
                 alignment = .right
             case Self.modifiedColumnID:
                 text = item.modifiedDescription
@@ -455,6 +457,46 @@ struct RemoteFileTableView: NSViewRepresentable {
             ])
 
             return cell
+        }
+
+        private func sortRank(_ item: RemoteItem) -> Int {
+            if item.isDirectory {
+                return 0
+            }
+            if item.isSymlink {
+                return 1
+            }
+            return 2
+        }
+
+        private func symbolName(for item: RemoteItem) -> String {
+            if item.isDirectory {
+                return "folder"
+            }
+            if item.isSymlink {
+                return "link"
+            }
+            return "doc"
+        }
+
+        private func accessibilityDescription(for item: RemoteItem) -> String {
+            if item.isDirectory {
+                return "Folder"
+            }
+            if item.isSymlink {
+                return "Symlink"
+            }
+            return "File"
+        }
+
+        private func tintColor(for item: RemoteItem) -> NSColor {
+            if item.isDirectory {
+                return .controlAccentColor
+            }
+            if item.isSymlink {
+                return .tertiaryLabelColor
+            }
+            return .secondaryLabelColor
         }
     }
 }

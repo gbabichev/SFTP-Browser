@@ -18,6 +18,7 @@ struct RemoteItem: Identifiable, Hashable, Sendable {
     let id = UUID()
     let name: String
     let isDirectory: Bool
+    let isSymlink: Bool
     let sizeBytes: Int64
     let modifiedAt: Date?
     let permissions: UInt32?
@@ -39,7 +40,7 @@ struct RemoteItem: Identifiable, Hashable, Sendable {
             return ""
         }
 
-        var description = isDirectory ? "d" : "-"
+        var description = isSymlink ? "l" : (isDirectory ? "d" : "-")
         for (bit, character) in [
             (UInt32(0o400), "r"), (UInt32(0o200), "w"), (UInt32(0o100), "x"),
             (UInt32(0o040), "r"), (UInt32(0o020), "w"), (UInt32(0o010), "x"),

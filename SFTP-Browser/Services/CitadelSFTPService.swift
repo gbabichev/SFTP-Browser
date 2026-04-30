@@ -28,8 +28,10 @@ struct CitadelSFTPService: SFTPService {
                 }
                 .map(Self.remoteItem)
                 .sorted { lhs, rhs in
-                    if lhs.isDirectory != rhs.isDirectory {
-                        return lhs.isDirectory && !rhs.isDirectory
+                    let lhsRank = Self.sortRank(lhs)
+                    let rhsRank = Self.sortRank(rhs)
+                    if lhsRank != rhsRank {
+                        return lhsRank < rhsRank
                     }
                     return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
                 }
@@ -42,6 +44,10 @@ struct CitadelSFTPService: SFTPService {
         remotePath: String,
         progress: TransferProgressHandler?
     ) async throws {
+        guard !Self.isSymlink(localURL) else {
+            return
+        }
+
         let destinationPath = appendingRemotePathComponent(remotePath, localURL.lastPathComponent)
         let totalBytes = localFileSize(at: localURL)
 
@@ -117,7 +123,12 @@ struct CitadelSFTPService: SFTPService {
             var totalBytes: Int64 = 0
             for item in remoteItems {
                 let remotePath = appendingRemotePathComponent(remoteDirectoryPath, item.name)
-                totalBytes += try await remoteItemSize(sftp: sftp, remotePath: remotePath, isDirectory: item.isDirectory)
+                totalBytes += try await remoteItemSize(
+                    sftp: sftp,
+                    remotePath: remotePath,
+                    isDirectory: item.isDirectory,
+                    isSymlink: item.isSymlink
+                )
             }
             let progressTotal = totalBytes > 0 ? totalBytes : nil
 
@@ -132,6 +143,7 @@ struct CitadelSFTPService: SFTPService {
                     sftp: sftp,
                     remotePath: remotePath,
                     isDirectory: item.isDirectory,
+                    isSymlink: item.isSymlink,
                     localURL: localURL,
                     completedBytes: completedBytes,
                     totalBytes: progressTotal,
@@ -167,11 +179,15 @@ struct CitadelSFTPService: SFTPService {
         totalBytes: Int64?,
         progress: TransferProgressHandler?
     ) async throws -> Int64 {
+        if Self.isSymlink(localURL) {
+            return completedBytes
+        }
+
         if Self.isDirectory(localURL) {
             try await ensureRemoteDirectory(sftp: sftp, remotePath: remotePath)
             let childURLs = try FileManager.default.contentsOfDirectory(
                 at: localURL,
-                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles]
             )
             var latestCompletedBytes = completedBytes
@@ -243,11 +259,16 @@ struct CitadelSFTPService: SFTPService {
         sftp: SFTPClient,
         remotePath: String,
         isDirectory: Bool,
+        isSymlink: Bool,
         localURL: URL,
         completedBytes: Int64,
         totalBytes: Int64?,
         progress: TransferProgressHandler?
     ) async throws -> Int64 {
+        if isSymlink {
+            return completedBytes
+        }
+
         if isDirectory {
             try FileManager.default.createDirectory(at: localURL, withIntermediateDirectories: true)
             let children = try await listRemoteItems(sftp: sftp, path: remotePath)
@@ -258,6 +279,7 @@ struct CitadelSFTPService: SFTPService {
                     sftp: sftp,
                     remotePath: appendingRemotePathComponent(remotePath, child.name),
                     isDirectory: child.isDirectory,
+                    isSymlink: child.isSymlink,
                     localURL: localURL.appendingPathComponent(child.name),
                     completedBytes: latestCompletedBytes,
                     totalBytes: totalBytes,
@@ -337,7 +359,16 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
-    private func remoteItemSize(sftp: SFTPClient, remotePath: String, isDirectory: Bool) async throws -> Int64 {
+    private func remoteItemSize(
+        sftp: SFTPClient,
+        remotePath: String,
+        isDirectory: Bool,
+        isSymlink: Bool
+    ) async throws -> Int64 {
+        if isSymlink {
+            return 0
+        }
+
         if !isDirectory {
             return try await remoteFileSize(sftp: sftp, remoteFilePath: remotePath)
         }
@@ -349,7 +380,8 @@ struct CitadelSFTPService: SFTPService {
             totalBytes += try await remoteItemSize(
                 sftp: sftp,
                 remotePath: appendingRemotePathComponent(remotePath, child.name),
-                isDirectory: child.isDirectory
+                isDirectory: child.isDirectory,
+                isSymlink: child.isSymlink
             )
         }
         return totalBytes
@@ -407,12 +439,14 @@ struct CitadelSFTPService: SFTPService {
 
     nonisolated private static func remoteItem(from component: SFTPPathComponent) -> RemoteItem {
         let permissions = component.attributes.permissions
-        let isDirectory = isDirectory(permissions: permissions, longname: component.longname)
+        let isSymlink = isSymlink(permissions: permissions, longname: component.longname)
+        let isDirectory = !isSymlink && isDirectory(permissions: permissions, longname: component.longname)
         let size = component.attributes.size.flatMap(Int64.init(exactly:)) ?? 0
 
         return RemoteItem(
             name: component.filename,
             isDirectory: isDirectory,
+            isSymlink: isSymlink,
             sizeBytes: size,
             modifiedAt: component.attributes.accessModificationTime?.modificationTime,
             permissions: permissions
@@ -428,6 +462,27 @@ struct CitadelSFTPService: SFTPService {
         }
 
         return longname.first == "d"
+    }
+
+    nonisolated private static func isSymlink(permissions: UInt32?, longname: String) -> Bool {
+        let fileTypeMask: UInt32 = 0o170000
+        let symlinkType: UInt32 = 0o120000
+
+        if let permissions {
+            return (permissions & fileTypeMask) == symlinkType
+        }
+
+        return longname.first == "l"
+    }
+
+    nonisolated private static func sortRank(_ item: RemoteItem) -> Int {
+        if item.isDirectory {
+            return 0
+        }
+        if item.isSymlink {
+            return 1
+        }
+        return 2
     }
 
     private func appendingRemotePathComponent(_ basePath: String, _ component: String) -> String {
@@ -450,8 +505,12 @@ struct CitadelSFTPService: SFTPService {
     }
 
     private static func localItemSize(at url: URL) -> Int64 {
+        if isSymlink(url) {
+            return 0
+        }
+
         if isDirectory(url) {
-            let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+            let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
             guard let enumerator = FileManager.default.enumerator(
                 at: url,
                 includingPropertiesForKeys: Array(resourceKeys),
@@ -481,11 +540,21 @@ struct CitadelSFTPService: SFTPService {
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else {
+            return false
+        }
+        return values.isDirectory == true && values.isSymbolicLink != true
     }
 
     private static func isRegularFile(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+            return false
+        }
+        return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private static func isSymlink(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
     }
 }
 

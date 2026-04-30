@@ -94,7 +94,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canDownloadSelection: Bool {
-        !selectedItems.isEmpty
+        !selectedItems.isEmpty && !selectedItems.contains { $0.isSymlink }
     }
 
     var canDeleteSelection: Bool {
@@ -230,6 +230,10 @@ final class AppViewModel: ObservableObject {
     func download() {
         let selection = selectedItems
         guard !selection.isEmpty else { return }
+        guard !selection.contains(where: \.isSymlink) else {
+            errorMessage = "Symlink downloads are not supported yet. Select the linked target instead."
+            return
+        }
 
         if selection.count > 1 || selection[0].isDirectory {
             download(selection)
@@ -364,7 +368,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func filePromiseWriter(for item: RemoteItem) -> RemoteFilePromiseWriter? {
-        guard isConnected, !isBusy else {
+        guard isConnected, !isBusy, !item.isSymlink else {
             return nil
         }
 
@@ -460,6 +464,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func downloadPromisedItem(item: RemoteItem, remoteFilePath: String, localURL: URL) async throws {
+        guard !item.isSymlink else {
+            throw AppOperationError.symlinkDownloadUnsupported
+        }
         guard !isBusy else {
             throw AppOperationError.busy
         }
@@ -678,9 +685,13 @@ final class AppViewModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete \(item.name)?"
-        alert.informativeText = item.isDirectory
-            ? "This will recursively delete the selected remote directory and all of its contents."
-            : "This will delete the selected remote file."
+        if item.isSymlink {
+            alert.informativeText = "This will delete the selected remote symlink. The linked target will not be deleted."
+        } else {
+            alert.informativeText = item.isDirectory
+                ? "This will recursively delete the selected remote directory and all of its contents."
+                : "This will delete the selected remote file."
+        }
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
@@ -692,12 +703,21 @@ final class AppViewModel: ObservableObject {
         }
 
         let directoryCount = items.filter(\.isDirectory).count
+        let symlinkCount = items.filter(\.isSymlink).count
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete \(items.count) selected items?"
-        alert.informativeText = directoryCount > 0
-            ? "This will recursively delete the selected remote items, including \(directoryCount) selected folders and all of their contents."
-            : "This will delete the selected remote files."
+        if directoryCount > 0 {
+            var text = "This will recursively delete the selected remote items, including \(directoryCount) selected folders and all of their contents."
+            if symlinkCount > 0 {
+                text += " Selected symlinks will be deleted, but their linked targets will not be deleted."
+            }
+            alert.informativeText = text
+        } else if symlinkCount > 0 {
+            alert.informativeText = "This will delete the selected remote files and symlinks. Linked targets will not be deleted."
+        } else {
+            alert.informativeText = "This will delete the selected remote files."
+        }
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
@@ -1223,18 +1243,24 @@ final class AppViewModel: ObservableObject {
     private static let transferOverlayDelay = 1.5
 
     private static func isUploadableItem(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+        if values?.isSymbolicLink == true {
+            return false
+        }
         return values?.isRegularFile == true || values?.isDirectory == true
     }
 }
 
 private enum AppOperationError: LocalizedError {
     case busy
+    case symlinkDownloadUnsupported
 
     var errorDescription: String? {
         switch self {
         case .busy:
             return "Another operation is already running."
+        case .symlinkDownloadUnsupported:
+            return "Symlink downloads are not supported yet. Select the linked target instead."
         }
     }
 }
