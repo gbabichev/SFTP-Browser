@@ -12,10 +12,16 @@ import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
+import OSLog
 import Quartz
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.georgebabichev.SFTP-Browser",
+        category: "AppViewModel"
+    )
+
     @Published var host = ""
     @Published var port = 22
     @Published var username = ""
@@ -101,6 +107,10 @@ final class AppViewModel: ObservableObject {
 
     var canDeleteSelection: Bool {
         !selectedItems.isEmpty
+    }
+
+    var canCleanDSStoreFiles: Bool {
+        isConnected && !isBusy
     }
 
     var activeTransferJob: TransferJob? {
@@ -365,6 +375,35 @@ final class AppViewModel: ObservableObject {
                 try await self.service.deleteItem(config: self.connectionConfig(), remotePath: itemPath, isDirectory: item.isDirectory)
             }
             try await self.loadCurrentDirectory()
+        }
+    }
+
+    func cleanDSStoreFiles() {
+        guard confirmCleanDSStoreFiles() else {
+            Self.logger.info("Cancelled .DS_Store cleanup before starting.")
+            return
+        }
+
+        let targetPath = remotePath
+        Self.logger.info("Requested .DS_Store cleanup from UI at \(targetPath, privacy: .public)")
+        startBusyOperation(
+            message: "Cleaning .DS_Store...",
+            canCancel: true,
+            showsOverlayAfterDelay: true,
+            cancellationMessage: "Cleanup cancelled."
+        ) {
+            let result = try await self.service.cleanDSStoreFiles(
+                config: self.connectionConfig(),
+                remotePath: targetPath
+            )
+            Self.logger.info(".DS_Store cleanup service call completed at \(targetPath, privacy: .public). Removed \(result.removedCount, privacy: .public) files, skipped \(result.skippedCount, privacy: .public) items.")
+            do {
+                try await self.loadCurrentDirectory()
+                Self.logger.info("Refreshed current directory after .DS_Store cleanup at \(self.remotePath, privacy: .public)")
+            } catch {
+                Self.logger.warning("Refresh after .DS_Store cleanup failed at \(self.remotePath, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+            self.errorMessage = self.dsStoreCleanupMessage(result, targetPath: targetPath)
         }
     }
 
@@ -646,6 +685,7 @@ final class AppViewModel: ObservableObject {
             } catch {
                 let status: TransferJob.Status = error is CancellationError ? .cancelled : .failed
                 let message = status == .cancelled ? nil : userFacingErrorDescription(error)
+                Self.logger.error("Transfer operation finished with \(String(describing: status), privacy: .public). Raw error: \(String(describing: error), privacy: .public). User message: \(message ?? "nil", privacy: .public)")
                 finishTransferJob(operation.id, status: status, errorDescription: message)
                 if status == .failed {
                     errorMessage = message
@@ -788,6 +828,31 @@ final class AppViewModel: ObservableObject {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmCleanDSStoreFiles() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Clean up .DS_Store files?"
+        alert.informativeText = "This will recursively delete remote .DS_Store files under \(remotePath). Other files will not be changed."
+        alert.addButton(withTitle: "Clean Up")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func dsStoreCleanupMessage(_ result: DSStoreCleanupResult, targetPath: String) -> String {
+        let removedDescription = result.removedCount == 1
+            ? "Removed 1 .DS_Store file"
+            : "Removed \(result.removedCount) .DS_Store files"
+
+        guard result.skippedCount > 0 else {
+            return "\(removedDescription) from \(targetPath)."
+        }
+
+        let skippedDescription = result.skippedCount == 1
+            ? "Skipped 1 inaccessible path"
+            : "Skipped \(result.skippedCount) inaccessible paths"
+        return "\(removedDescription) from \(targetPath). \(skippedDescription)."
     }
 
     private func confirmReplaceIfNeeded(_ names: [String], locationDescription: String) -> Bool {
@@ -952,10 +1017,15 @@ final class AppViewModel: ObservableObject {
         } catch {
             if currentBusyOperationID == operationID {
                 if error is CancellationError {
+                    Self.logger.info("Busy operation cancelled. Message: \(cancellationMessage, privacy: .public)")
                     errorMessage = cancellationMessage
                 } else {
-                    errorMessage = userFacingErrorDescription(error)
+                    let message = userFacingErrorDescription(error)
+                    Self.logger.error("Busy operation failed. Raw error: \(String(describing: error), privacy: .public). User message: \(message, privacy: .public)")
+                    errorMessage = message
                 }
+            } else {
+                Self.logger.warning("Busy operation failed after it was no longer current. Raw error: \(String(describing: error), privacy: .public)")
             }
             throw error
         }

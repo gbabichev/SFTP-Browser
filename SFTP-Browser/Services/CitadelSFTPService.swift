@@ -8,10 +8,17 @@
 import Citadel
 import Foundation
 import NIO
+import OSLog
 
 struct CitadelSFTPService: SFTPService {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.georgebabichev.SFTP-Browser",
+        category: "SFTPService"
+    )
+
     private let chunkSize: UInt32 = 256 * 1024
     private let connectTimeout: TimeAmount = .seconds(8)
+    private let cleanupDirectoryListBatchSize = 400
     private let knownHostStore: KnownHostStore
 
     init(knownHostStore: KnownHostStore) {
@@ -213,6 +220,40 @@ struct CitadelSFTPService: SFTPService {
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws {
         try await withSFTP(config: config) { sftp in
             try await deleteRemoteItem(sftp: sftp, remotePath: remotePath, isDirectory: isDirectory)
+        }
+    }
+
+    func cleanDSStoreFiles(config: SFTPConnectionConfig, remotePath: String) async throws -> DSStoreCleanupResult {
+        Self.logger.info("Starting .DS_Store cleanup at \(remotePath, privacy: .public)")
+        do {
+            var pendingPaths = [remotePath]
+            var result = DSStoreCleanupResult()
+
+            while !pendingPaths.isEmpty {
+                let batchPendingPaths = pendingPaths
+                let batchResult = try await withSFTP(config: config) { sftp in
+                    try await deleteDSStoreFilesBatch(
+                        sftp: sftp,
+                        rootPath: remotePath,
+                        pendingPaths: batchPendingPaths
+                    )
+                }
+                result.merge(batchResult.result)
+                pendingPaths = batchResult.pendingPaths
+
+                if !pendingPaths.isEmpty {
+                    Self.logger.info("Reconnecting SFTP cleanup session after scanning \(self.cleanupDirectoryListBatchSize, privacy: .public) directories. \(pendingPaths.count, privacy: .public) paths remain queued.")
+                }
+            }
+
+            Self.logger.info("Finished .DS_Store cleanup at \(remotePath, privacy: .public). Removed \(result.removedCount, privacy: .public) files, skipped \(result.skippedCount, privacy: .public) items.")
+            if !result.skippedPathSamples.isEmpty {
+                Self.logger.warning(".DS_Store cleanup skipped inaccessible paths. Examples: \(result.skippedPathSamples.joined(separator: ", "), privacy: .public)")
+            }
+            return result
+        } catch {
+            Self.logger.error(".DS_Store cleanup failed at \(remotePath, privacy: .public): \(String(describing: error), privacy: .public)")
+            throw error
         }
     }
 
@@ -482,6 +523,59 @@ struct CitadelSFTPService: SFTPService {
         }
     }
 
+    private func deleteDSStoreFilesBatch(
+        sftp: SFTPClient,
+        rootPath: String,
+        pendingPaths: [String]
+    ) async throws -> DSStoreCleanupBatchResult {
+        var pendingPaths = pendingPaths
+        var result = DSStoreCleanupResult()
+        var listedDirectoryCount = 0
+
+        while !pendingPaths.isEmpty {
+            try Task.checkCancellation()
+
+            guard listedDirectoryCount < cleanupDirectoryListBatchSize else {
+                break
+            }
+
+            let remotePath = pendingPaths.removeLast()
+            listedDirectoryCount += 1
+
+            let children: [RemoteItem]
+            do {
+                children = try await listRemoteItems(sftp: sftp, path: remotePath)
+            } catch {
+                if remotePath == rootPath {
+                    Self.logger.error("Failed to list starting directory during .DS_Store cleanup: \(remotePath, privacy: .public). Error: \(String(describing: error), privacy: .public)")
+                    throw error
+                }
+
+                result.recordSkippedPath(remotePath)
+                continue
+            }
+
+            for child in children.reversed() {
+                try Task.checkCancellation()
+                let childPath = appendingRemotePathComponent(remotePath, child.name)
+
+                if child.isDirectory {
+                    pendingPaths.append(childPath)
+                } else if !child.isSymlink && child.name == ".DS_Store" {
+                    Self.logger.info("Deleting remote .DS_Store file: \(childPath, privacy: .public)")
+                    do {
+                        try await sftp.remove(at: childPath)
+                        result.removedCount += 1
+                    } catch {
+                        result.recordSkippedPath(childPath)
+                    }
+                }
+            }
+        }
+
+        return DSStoreCleanupBatchResult(result: result, pendingPaths: pendingPaths)
+    }
+
     private func remoteItemSize(
         sftp: SFTPClient,
         remotePath: String,
@@ -746,6 +840,11 @@ private struct TransferPreflightError: LocalizedError {
     var errorDescription: String? {
         "Could not check transfer conflicts for \(path). \(underlying.localizedDescription)"
     }
+}
+
+private struct DSStoreCleanupBatchResult {
+    let result: DSStoreCleanupResult
+    let pendingPaths: [String]
 }
 
 private extension String {

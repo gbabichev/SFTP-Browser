@@ -95,6 +95,15 @@ private struct SFTPBrowserCommands: Commands {
             }
             .disabled(browserCommandContext?.canDelete != true)
         }
+
+        CommandMenu("Tools") {
+            Button {
+                browserCommandContext?.cleanDSStoreFiles()
+            } label: {
+                Label("Clean Up .DS_Store", systemImage: "sparkles")
+            }
+            .disabled(browserCommandContext?.canCleanDSStoreFiles != true)
+        }
     }
 }
 
@@ -104,11 +113,13 @@ struct SFTPBrowserCommandContext {
     let canUpload: Bool
     let canDownload: Bool
     let canDelete: Bool
+    let canCleanDSStoreFiles: Bool
     let refresh: () -> Void
     let newFolder: () -> Void
     let upload: () -> Void
     let download: () -> Void
     let deleteSelection: () -> Void
+    let cleanDSStoreFiles: () -> Void
 }
 
 private struct SFTPBrowserCommandContextKey: FocusedValueKey {

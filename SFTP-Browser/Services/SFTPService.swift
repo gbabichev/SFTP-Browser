@@ -58,6 +58,29 @@ struct TransferProgress: Sendable {
     let totalBytes: Int64?
 }
 
+struct DSStoreCleanupResult: Sendable {
+    var removedCount = 0
+    var skippedCount = 0
+    var skippedPathSamples: [String] = []
+
+    mutating func recordSkippedPath(_ path: String) {
+        skippedCount += 1
+        if skippedPathSamples.count < 5 {
+            skippedPathSamples.append(path)
+        }
+    }
+
+    mutating func merge(_ result: DSStoreCleanupResult) {
+        removedCount += result.removedCount
+        skippedCount += result.skippedCount
+
+        let availableSampleSlots = max(0, 5 - skippedPathSamples.count)
+        if availableSampleSlots > 0 {
+            skippedPathSamples.append(contentsOf: result.skippedPathSamples.prefix(availableSampleSlots))
+        }
+    }
+}
+
 typealias TransferProgressHandler = @Sendable (TransferProgress) async -> Void
 
 protocol SFTPService: Sendable {
@@ -71,4 +94,5 @@ protocol SFTPService: Sendable {
     func createDirectory(config: SFTPConnectionConfig, remotePath: String) async throws
     func renameItem(config: SFTPConnectionConfig, oldPath: String, newPath: String) async throws
     func deleteItem(config: SFTPConnectionConfig, remotePath: String, isDirectory: Bool) async throws
+    func cleanDSStoreFiles(config: SFTPConnectionConfig, remotePath: String) async throws -> DSStoreCleanupResult
 }

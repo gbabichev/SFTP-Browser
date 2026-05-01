@@ -28,6 +28,7 @@ The app lets you:
 - drag files or folders out to Finder to download
 - rename or delete remote items from the right-click menu
 - delete selected remote items from the toolbar
+- clean up remote `.DS_Store` files from the macOS Tools menu
 - see transfer progress, ETA, queued transfers, and completed transfers
 - cancel active or queued transfers
 
@@ -67,6 +68,14 @@ The table shows basic remote metadata:
 - permissions
 
 Symlinks are shown as links. They can be deleted without deleting the linked target, but downloads and Quick Look previews do not follow symlinks.
+
+## Tools
+
+The macOS Tools menu includes:
+
+- `Clean Up .DS_Store`
+
+This tool starts at the current remote folder and recursively removes `.DS_Store` files left behind by macOS. It only targets `.DS_Store` files and leaves other remote files alone.
 
 ## Keyboard Shortcuts
 
