@@ -383,6 +383,12 @@ struct ContentView: View {
                 onQuickLook: {
                     viewModel.quickLookSelection()
                 },
+                onRefresh: {
+                    viewModel.refresh()
+                },
+                onDownloadSelection: {
+                    viewModel.download()
+                },
                 onRename: { item in
                     viewModel.rename(item)
                 },

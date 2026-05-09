@@ -14,6 +14,8 @@ struct RemoteFileTableView: NSViewRepresentable {
     let actionsEnabled: Bool
     let onOpen: (RemoteItem) -> Void
     let onQuickLook: () -> Void
+    let onRefresh: () -> Void
+    let onDownloadSelection: () -> Void
     let onRename: (RemoteItem) -> Void
     let onDelete: (RemoteItem) -> Void
     let onDeleteSelection: () -> Void
@@ -167,6 +169,10 @@ struct RemoteFileTableView: NSViewRepresentable {
             return ids
         }
 
+        private func selectedItemsFromTable() -> [RemoteItem] {
+            tableView.selectedRowIndexes.compactMap { item(at: $0) }
+        }
+
         private func applySelectionToTable(_ selectedItemIDs: Set<RemoteItem.ID>) {
             isApplyingSelection = true
             defer { isApplyingSelection = false }
@@ -270,6 +276,16 @@ struct RemoteFileTableView: NSViewRepresentable {
             menu.removeAllItems()
             contextMenuTargetItem = contextTargetItem()
 
+            let refreshItem = NSMenuItem(
+                title: "Refresh",
+                action: #selector(handleRefreshMenuAction),
+                keyEquivalent: ""
+            )
+            refreshItem.target = self
+            refreshItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+            refreshItem.isEnabled = parent.actionsEnabled
+            menu.addItem(refreshItem)
+
             let newFolderItem = NSMenuItem(
                 title: "New Folder",
                 action: #selector(handleNewFolderMenuAction),
@@ -285,6 +301,19 @@ struct RemoteFileTableView: NSViewRepresentable {
             }
 
             menu.addItem(.separator())
+
+            let selectedItems = selectedItemsFromTable()
+            let downloadItem = NSMenuItem(
+                title: selectedItems.count > 1 ? "Download \(selectedItems.count) Items" : "Download",
+                action: #selector(handleDownloadMenuAction),
+                keyEquivalent: ""
+            )
+            downloadItem.target = self
+            downloadItem.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)
+            downloadItem.isEnabled = parent.actionsEnabled
+                && !selectedItems.isEmpty
+                && !selectedItems.contains { $0.isSymlink }
+            menu.addItem(downloadItem)
 
             let renameItem = NSMenuItem(
                 title: "Rename",
@@ -305,6 +334,16 @@ struct RemoteFileTableView: NSViewRepresentable {
             deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
             deleteItem.isEnabled = parent.actionsEnabled
             menu.addItem(deleteItem)
+        }
+
+        @objc
+        private func handleRefreshMenuAction() {
+            parent.onRefresh()
+        }
+
+        @objc
+        private func handleDownloadMenuAction() {
+            parent.onDownloadSelection()
         }
 
         @objc
