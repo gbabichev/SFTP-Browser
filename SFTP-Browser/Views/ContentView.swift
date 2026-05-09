@@ -98,15 +98,19 @@ struct ContentView: View {
         .onAppear(perform: restoreStoredConnection)
         .onChange(of: viewModel.host) { _, host in
             storedHost = host
+            selectedProfileID = matchingProfileID()
         }
         .onChange(of: viewModel.port) { _, port in
             storedPort = port
+            selectedProfileID = matchingProfileID()
         }
         .onChange(of: viewModel.username) { _, username in
             storedUsername = username
+            selectedProfileID = matchingProfileID()
         }
         .onChange(of: viewModel.remotePath) { _, remotePath in
             storedRemotePath = remotePath
+            selectedProfileID = matchingProfileID()
         }
     }
 
@@ -481,18 +485,28 @@ struct ContentView: View {
     }
 
     private func saveCurrentProfile() {
-        guard let name = promptForProfileName() else {
+        let host = viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remotePath = normalizedRemotePath(viewModel.remotePath)
+        let existingProfile = matchingProfile(
+            host: host,
+            port: viewModel.port,
+            username: username,
+            remotePath: remotePath
+        )
+
+        guard let name = promptForProfileName(existingProfile: existingProfile) else {
             return
         }
 
         let now = Date()
         let profile = ConnectionProfile(
-            id: selectedProfileID ?? UUID(),
+            id: existingProfile?.id ?? UUID(),
             name: name,
-            host: viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines),
+            host: host,
             port: viewModel.port,
-            username: viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines),
-            remotePath: normalizedRemotePath(viewModel.remotePath),
+            username: username,
+            remotePath: remotePath,
             updatedAt: now
         )
 
@@ -505,6 +519,7 @@ struct ContentView: View {
     private func delete(_ profile: ConnectionProfile) {
         profileStore.delete(profile)
         passwordStore(for: profile).deletePassword()
+        legacyPasswordStore(for: profile).deletePassword()
         if selectedProfileID == profile.id {
             selectedProfileID = nil
         }
@@ -519,23 +534,31 @@ struct ContentView: View {
     }
 
     private func matchingProfileID() -> ConnectionProfile.ID? {
-        profiles.first { profile in
-            profile.host.caseInsensitiveCompare(viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
-            && profile.port == viewModel.port
-            && profile.username == viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines)
-            && normalizedRemotePath(profile.remotePath) == normalizedRemotePath(viewModel.remotePath)
-        }?.id
+        matchingProfile(
+            host: viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines),
+            port: viewModel.port,
+            username: viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines),
+            remotePath: normalizedRemotePath(viewModel.remotePath)
+        )?.id
     }
 
-    private func promptForProfileName() -> String? {
+    private func matchingProfile(host: String, port: Int, username: String, remotePath: String) -> ConnectionProfile? {
+        profiles.first { profile in
+            profile.host.caseInsensitiveCompare(host) == .orderedSame
+            && profile.port == port
+            && profile.username == username
+            && normalizedRemotePath(profile.remotePath) == remotePath
+        }
+    }
+
+    private func promptForProfileName(existingProfile: ConnectionProfile?) -> String? {
         let alert = NSAlert()
         alert.messageText = "Save Connection Profile"
         alert.informativeText = "Enter a name for this connection profile."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
-        let defaultName = profiles.first(where: { $0.id == selectedProfileID })?.name
-            ?? "\(viewModel.username)@\(viewModel.host)"
+        let defaultName = existingProfile?.name ?? "\(viewModel.username)@\(viewModel.host)"
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
         textField.stringValue = defaultName
         textField.selectText(nil)
@@ -578,19 +601,24 @@ struct ContentView: View {
             return
         }
 
-        passwordStore().savePassword(viewModel.password)
-    }
-
-    private func passwordStore() -> KeychainPasswordStore {
-        KeychainPasswordStore(account: passwordAccount(
-            host: viewModel.host,
+        guard let profile = matchingProfile(
+            host: viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines),
             port: viewModel.port,
-            username: viewModel.username
-        ))
+            username: viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines),
+            remotePath: normalizedRemotePath(viewModel.remotePath)
+        ) else {
+            return
+        }
+
+        passwordStore(for: profile).savePassword(viewModel.password)
     }
 
     private func passwordStore(for profile: ConnectionProfile) -> KeychainPasswordStore {
-        KeychainPasswordStore(account: passwordAccount(
+        KeychainPasswordStore(account: "connection-profile-password:\(profile.id.uuidString)")
+    }
+
+    private func legacyPasswordStore(for profile: ConnectionProfile) -> KeychainPasswordStore {
+        KeychainPasswordStore(account: legacyPasswordAccount(
             host: profile.host,
             port: profile.port,
             username: profile.username
@@ -598,11 +626,30 @@ struct ContentView: View {
     }
 
     private func loadCurrentPassword() -> String {
-        let scopedPassword = passwordStore().loadPassword()
-        return scopedPassword.isEmpty ? KeychainPasswordStore().loadPassword() : scopedPassword
+        guard let profile = matchingProfile(
+            host: viewModel.host.trimmingCharacters(in: .whitespacesAndNewlines),
+            port: viewModel.port,
+            username: viewModel.username.trimmingCharacters(in: .whitespacesAndNewlines),
+            remotePath: normalizedRemotePath(viewModel.remotePath)
+        ) else {
+            return ""
+        }
+
+        let profilePasswordStore = passwordStore(for: profile)
+        let profilePassword = profilePasswordStore.loadPassword()
+        if !profilePassword.isEmpty {
+            return profilePassword
+        }
+
+        let legacyPassword = legacyPasswordStore(for: profile).loadPassword()
+        if !legacyPassword.isEmpty {
+            profilePasswordStore.savePassword(legacyPassword)
+            legacyPasswordStore(for: profile).deletePassword()
+        }
+        return legacyPassword
     }
 
-    private func passwordAccount(host: String, port: Int, username: String) -> String {
+    private func legacyPasswordAccount(host: String, port: Int, username: String) -> String {
         let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return "sftp-password:\(normalizedUsername)@\(normalizedHost):\(port)"
