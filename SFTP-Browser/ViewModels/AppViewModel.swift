@@ -30,6 +30,7 @@ final class AppViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var isBusyOverlayVisible = false
+    @Published var isBusyFeedbackVisible = false
     @Published var canCancelBusyOperation = false
     @Published var isCancellingBusyOperation = false
     @Published var busyMessage = "Working..."
@@ -237,10 +238,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func navigateToCurrentPath() {
+        startBusyOperation(message: "Loading...", showsOverlayAfterDelay: true) {
+            try await self.loadCurrentDirectory()
+        }
+    }
+
     func submitRemotePath() {
         remotePath = remotePath.normalizedRemotePath()
         if isConnected {
-            refresh()
+            navigateToCurrentPath()
         } else if canConnect {
             connect()
         }
@@ -249,7 +256,7 @@ final class AppViewModel: ObservableObject {
     func open(_ item: RemoteItem) {
         guard item.isDirectory else { return }
         remotePath = remotePath.appendingRemotePathComponent(item.name)
-        refresh()
+        navigateToCurrentPath()
     }
 
     func openSelectedFolder() {
@@ -264,7 +271,7 @@ final class AppViewModel: ObservableObject {
             return
         }
         remotePath = remotePath.deletingLastRemotePathComponent()
-        refresh()
+        navigateToCurrentPath()
     }
 
     func upload() {
@@ -449,6 +456,7 @@ final class AppViewModel: ObservableObject {
         busyOverlayDelayTask = nil
         isBusy = false
         isBusyOverlayVisible = false
+        isBusyFeedbackVisible = false
         canCancelBusyOperation = false
         isCancellingBusyOperation = false
         busyMessage = "Working..."
@@ -1033,6 +1041,7 @@ final class AppViewModel: ObservableObject {
                 busyOverlayDelayTask = nil
                 isBusy = false
                 isBusyOverlayVisible = false
+                isBusyFeedbackVisible = false
                 canCancelBusyOperation = false
                 isCancellingBusyOperation = false
                 busyMessage = "Working..."
@@ -1239,9 +1248,11 @@ final class AppViewModel: ObservableObject {
     private func showBusyOverlay(afterDelay: Bool) {
         busyOverlayDelayTask?.cancel()
         isBusyOverlayVisible = false
+        isBusyFeedbackVisible = false
 
         guard afterDelay else {
             isBusyOverlayVisible = true
+            isBusyFeedbackVisible = true
             return
         }
 
@@ -1252,6 +1263,7 @@ final class AppViewModel: ObservableObject {
             }
 
             self.isBusyOverlayVisible = true
+            self.isBusyFeedbackVisible = true
         }
     }
 

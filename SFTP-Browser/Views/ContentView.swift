@@ -265,9 +265,6 @@ struct ContentView: View {
                 TextField("Port", value: $viewModel.port, format: .number)
                     .frame(width: 68)
 
-                Divider()
-                    .frame(height: 18)
-
                 Image(systemName: "person")
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
@@ -446,11 +443,11 @@ struct ContentView: View {
     }
 
     private var footerShowsActivity: Bool {
-        viewModel.isBusy && viewModel.activeTransferJob == nil
+        viewModel.isBusyFeedbackVisible && viewModel.activeTransferJob == nil
     }
 
     private var footerStatusText: String {
-        if viewModel.errorMessage != nil || viewModel.isBusy {
+        if viewModel.errorMessage != nil || viewModel.isBusyFeedbackVisible {
             return viewModel.statusText
         }
         if viewModel.isConnected {
