@@ -188,6 +188,10 @@ scripts/prepare-transfer-conflict-fixtures.sh
 
 ## Changelog
 
+### 1.0.1
+- Added cmd+up/down keyboard nav. 
+- Added refresh and download to right click context menus.
+
 ### 1.0.0
 
 - Initial release.
