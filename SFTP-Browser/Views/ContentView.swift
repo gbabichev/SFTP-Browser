@@ -376,6 +376,7 @@ struct ContentView: View {
             RemoteFileTableView(
                 items: viewModel.items,
                 selectedItemIDs: $viewModel.selectedItemIDs,
+                focusRequestID: viewModel.fileListFocusRequestID,
                 actionsEnabled: viewModel.isConnected && !viewModel.isBusy,
                 onOpen: { item in
                     viewModel.open(item)

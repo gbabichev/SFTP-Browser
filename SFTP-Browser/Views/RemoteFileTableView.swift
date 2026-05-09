@@ -11,6 +11,7 @@ import SwiftUI
 struct RemoteFileTableView: NSViewRepresentable {
     let items: [RemoteItem]
     @Binding var selectedItemIDs: Set<RemoteItem.ID>
+    let focusRequestID: Int
     let actionsEnabled: Bool
     let onOpen: (RemoteItem) -> Void
     let onQuickLook: () -> Void
@@ -34,6 +35,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.applyLatestModel()
+        context.coordinator.applyFocusRequestIfNeeded(focusRequestID)
     }
 
     @MainActor
@@ -52,6 +54,8 @@ struct RemoteFileTableView: NSViewRepresentable {
         private var contextMenuTargetItem: RemoteItem?
         private var activeFilePromiseWriters: [RemoteFilePromiseWriter] = []
         private var displayedItems: [RemoteItem] = []
+        private var lastAppliedFocusRequestID = 0
+        private var focusTask: Task<Void, Never>?
 
         init(_ parent: RemoteFileTableView) {
             self.parent = parent
@@ -70,6 +74,39 @@ struct RemoteFileTableView: NSViewRepresentable {
             displayedItems = sortedItems(parent.items, using: tableView.sortDescriptors)
             tableView.reloadData()
             applySelectionToTable(parent.selectedItemIDs)
+        }
+
+        func applyFocusRequestIfNeeded(_ focusRequestID: Int) {
+            guard focusRequestID != lastAppliedFocusRequestID else {
+                return
+            }
+
+            lastAppliedFocusRequestID = focusRequestID
+            focusTask?.cancel()
+            focusTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard !Task.isCancelled else {
+                    return
+                }
+                self?.focusTable()
+            }
+        }
+
+        private func focusTable() {
+            guard let window = tableView.window else {
+                return
+            }
+
+            if !displayedItems.isEmpty {
+                if tableView.selectedRowIndexes.isEmpty {
+                    tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+                    parent.selectedItemIDs = selectedItemIDsFromTable()
+                }
+
+                tableView.scrollRowToVisible(max(tableView.selectedRow, 0))
+            }
+
+            window.makeFirstResponder(tableView)
         }
 
         private func configureTableView() {

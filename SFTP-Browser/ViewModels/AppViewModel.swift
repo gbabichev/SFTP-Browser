@@ -38,6 +38,7 @@ final class AppViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var items: [RemoteItem] = []
     @Published var selectedItemIDs = Set<RemoteItem.ID>()
+    @Published var fileListFocusRequestID = 0
     @Published var transferJobs: [TransferJob] = []
     @Published var isTransferOverlayVisible = false
     @Published var isCancellingTransfer = false
@@ -208,6 +209,17 @@ final class AppViewModel: ObservableObject {
             cancellationMessage: "Connection cancelled."
         ) {
             try await self.connectWithHostKeyHandling()
+        }
+
+        let connectionTask = currentBusyTask
+        Task { @MainActor [weak self, connectionTask] in
+            await connectionTask?.value
+            guard let self, self.isConnected else {
+                return
+            }
+
+            await Task.yield()
+            self.fileListFocusRequestID += 1
         }
     }
 
