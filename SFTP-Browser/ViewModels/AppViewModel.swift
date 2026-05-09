@@ -109,6 +109,15 @@ final class AppViewModel: ObservableObject {
         !selectedItems.isEmpty
     }
 
+    var canOpenSelectedFolder: Bool {
+        let selection = selectedItems
+        return selection.count == 1 && selection[0].isDirectory
+    }
+
+    var canGoUp: Bool {
+        isConnected && remotePath.normalizedRemotePath() != "/"
+    }
+
     var canCleanDSStoreFiles: Bool {
         isConnected && !isBusy
     }
@@ -231,7 +240,17 @@ final class AppViewModel: ObservableObject {
         refresh()
     }
 
+    func openSelectedFolder() {
+        guard canOpenSelectedFolder, let item = selectedItems.first else {
+            return
+        }
+        open(item)
+    }
+
     func goUp() {
+        guard canGoUp else {
+            return
+        }
         remotePath = remotePath.deletingLastRemotePathComponent()
         refresh()
     }

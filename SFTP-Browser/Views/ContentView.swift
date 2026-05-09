@@ -118,6 +118,8 @@ struct ContentView: View {
             canUpload: canUseRemoteActions,
             canDownload: canUseRemoteActions && viewModel.canDownloadSelection,
             canDelete: canUseRemoteActions && viewModel.canDeleteSelection,
+            canOpenSelectedFolder: canUseRemoteActions && viewModel.canOpenSelectedFolder,
+            canGoUp: canUseRemoteActions && viewModel.canGoUp,
             canCleanDSStoreFiles: viewModel.canCleanDSStoreFiles,
             refresh: {
                 viewModel.refresh()
@@ -133,6 +135,12 @@ struct ContentView: View {
             },
             deleteSelection: {
                 viewModel.deleteSelection()
+            },
+            openSelectedFolder: {
+                viewModel.openSelectedFolder()
+            },
+            goUp: {
+                viewModel.goUp()
             },
             cleanDSStoreFiles: {
                 viewModel.cleanDSStoreFiles()

@@ -63,6 +63,24 @@ private struct SFTPBrowserCommands: Commands {
 
         CommandMenu("Remote") {
             Button {
+                browserCommandContext?.openSelectedFolder()
+            } label: {
+                Label("Open Selected Folder", systemImage: "folder")
+            }
+            .keyboardShortcut(.downArrow, modifiers: .command)
+            .disabled(browserCommandContext?.canOpenSelectedFolder != true)
+
+            Button {
+                browserCommandContext?.goUp()
+            } label: {
+                Label("Go Up", systemImage: "arrow.up")
+            }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(browserCommandContext?.canGoUp != true)
+
+            Divider()
+
+            Button {
                 browserCommandContext?.refresh()
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
@@ -113,12 +131,16 @@ struct SFTPBrowserCommandContext {
     let canUpload: Bool
     let canDownload: Bool
     let canDelete: Bool
+    let canOpenSelectedFolder: Bool
+    let canGoUp: Bool
     let canCleanDSStoreFiles: Bool
     let refresh: () -> Void
     let newFolder: () -> Void
     let upload: () -> Void
     let download: () -> Void
     let deleteSelection: () -> Void
+    let openSelectedFolder: () -> Void
+    let goUp: () -> Void
     let cleanDSStoreFiles: () -> Void
 }
 
