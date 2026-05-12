@@ -733,6 +733,21 @@ private struct TransferQueueRow: View {
         }
     }
 
+    private var timestamp: Date {
+        switch job.status {
+        case .completed, .failed, .cancelled:
+            return job.completedAt ?? job.startedAt ?? job.enqueuedAt
+        case .running:
+            return job.startedAt ?? job.enqueuedAt
+        case .queued:
+            return job.enqueuedAt
+        }
+    }
+
+    private var timestampText: String {
+        timestamp.formatted(.dateTime.hour().minute().second())
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: job.kind.systemImage)
@@ -768,6 +783,10 @@ private struct TransferQueueRow: View {
             }
 
             Spacer(minLength: 8)
+
+            Text(timestampText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
 
             if canCancel {
                 Button(role: .cancel) {

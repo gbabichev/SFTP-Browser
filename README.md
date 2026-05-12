@@ -188,6 +188,9 @@ scripts/prepare-transfer-conflict-fixtures.sh
 
 ## Changelog
 
+### 1.0.2
+- Added a timestamp to each item in the activity monitor.
+
 ### 1.0.1
 - Added cmd+up/down keyboard nav. 
 - Added refresh and download to right click context menus.
